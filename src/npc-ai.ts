@@ -23,6 +23,8 @@ export const NPC_PATTERNS: Record<string, { speed: number; behavior: string }> =
   jhaddu:      { speed: 1.0, behavior: "circular" },
   morgan:      { speed: 1.1, behavior: "directed" },
   "the-kid":   { speed: 1.3, behavior: "wander" },
+  chaz:            { speed: 1.1, behavior: "wander" },
+  "the-correspondent": { speed: 0.9, behavior: "pacing" },
 };
 
 // Congress gathering target (pixel coords of council building doorway area)
@@ -47,6 +49,8 @@ const NPC_SPAWN_POSITIONS: Record<string, { x: number; y: number }> = {
   jhaddu:      { x: 420, y: 500 },
   morgan:      { x: 260, y: 490 },
   "the-kid":   { x: 600, y: 400 },
+  chaz:            { x: 380, y: 320 },
+  "the-correspondent": { x: 460, y: 460 },
 };
 
 // Per-NPC pacing state (for deterministic patterns)
