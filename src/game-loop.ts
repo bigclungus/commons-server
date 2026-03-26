@@ -15,10 +15,13 @@ import type {
 } from "./protocol.ts";
 import { tickNpcs } from "./npc-ai.ts";
 import { persistState } from "./persistence.ts";
-import { isPixelWalkable } from "./map.ts";
+// isPixelWalkable import removed: server map dimensions don't match client (see validateAndApplyMove)
 
-// Max distance a player can move per server tick (1.8px/frame * 60fps / 20Hz = 5.4px, × 2 tolerance)
-const MAX_MOVE_PER_TICK = 54;
+// Max distance a player can move per server tick in tile coords
+// Client moves ~1.8px/frame at 60fps, TILE=20px → ~5.4px/frame → ~0.27 tiles/frame
+// At 20Hz server tick: 60/20 = 3 frames per tick → ~0.81 tiles/tick, × 3 tolerance = ~2.5
+// Using 5 to be generous for lag/burst
+const MAX_MOVE_PER_TICK = 5; // tiles
 
 // Stale player eviction threshold
 const STALE_THRESHOLD = 60 * 1000; // 60s
@@ -105,6 +108,7 @@ export async function handleWalkerInteraction(
 // ─── Player validation ───────────────────────────────────────────────────────
 
 function validateAndApplyMove(player: PlayerState, msg: MoveMessage, world: WorldState): void {
+  // Client sends tile coordinates (tx, ty) — validate and clamp by tile distance
   const dx = msg.x - player.x;
   const dy = msg.y - player.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
@@ -113,7 +117,7 @@ function validateAndApplyMove(player: PlayerState, msg: MoveMessage, world: Worl
   let newY: number;
 
   if (dist > MAX_MOVE_PER_TICK) {
-    // Clamp to max speed
+    // Clamp to max tile speed
     const scale = MAX_MOVE_PER_TICK / dist;
     newX = player.x + dx * scale;
     newY = player.y + dy * scale;
@@ -122,12 +126,9 @@ function validateAndApplyMove(player: PlayerState, msg: MoveMessage, world: Worl
     newY = msg.y;
   }
 
-  // Server-side tile collision check
-  const chunk = world.chunks.get(`${msg.chunkX}:${msg.chunkY}`);
-  if (chunk && !isPixelWalkable(newX, newY, chunk)) {
-    // Discard the move — keep old position
-    return;
-  }
+  // Note: server-side walkability check skipped — server chunk map uses different tile
+  // dimensions (25×19 @ 32px) than the client (50×35 @ 20px). Collision is enforced
+  // client-side until server map is reconciled with client layout.
 
   player.x = newX;
   player.y = newY;

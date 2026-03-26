@@ -160,8 +160,8 @@ const bunServer = serve<SocketData>({
         socketId,
         name,
         color,
-        x: 400,
-        y: 300,
+        x: 25, // tile coords — client grid is 50×35 tiles, center = (25, 17)
+        y: 17,
         facing: "right",
         hopFrame: 0,
         isAway: false,
