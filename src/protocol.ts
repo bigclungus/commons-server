@@ -115,6 +115,8 @@ export interface NPCState {
   vy: number;
   pattern: string; // Persona-specific movement pattern
   congressTarget?: { x: number; y: number }; // Set during congress mode
+  blurb?: string;       // Current speech blurb (cleared after TTL expires server-side)
+  blurbTtl?: number;    // Ticks remaining for this blurb (20Hz ticks; not sent to client)
 }
 
 export interface WarthogState {

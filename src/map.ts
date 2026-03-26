@@ -1,5 +1,9 @@
 // Tile map: chunk generation and walkability
 // Tile IDs: 0=grass, 1=path, 2=water, 3=building, 4=tree, 5=rock, 6=fountain
+//
+// IMPORTANT: These dimensions must match the client (commons-v2/src/map/chunk.ts).
+// Client uses CANVAS_W=1000, CANVAS_H=700, TILE=20px → COLS=50, ROWS=35.
+// Server uses same: CHUNK_TILES_W=50, CHUNK_TILES_H=35, TILE_SIZE=20px.
 
 import type { ChunkData } from "./protocol.ts";
 
@@ -16,9 +20,10 @@ export const TILE = {
 // Tile types that are not walkable
 const SOLID_TILES = new Set([TILE.WATER, TILE.BUILDING, TILE.TREE, TILE.ROCK, TILE.FOUNTAIN]);
 
-export const CHUNK_TILES_W = 25;  // tiles per chunk (width)
-export const CHUNK_TILES_H = 19;  // tiles per chunk (height)
-export const TILE_SIZE = 32;      // pixels per tile
+// Dimensions must match client: commons-v2/src/state.ts COLS=50, ROWS=35, TILE=20
+export const CHUNK_TILES_W = 50;  // tiles per chunk (width) — matches client COLS
+export const CHUNK_TILES_H = 35;  // tiles per chunk (height) — matches client ROWS
+export const TILE_SIZE = 20;      // pixels per tile — matches client TILE
 
 // mulberry32 PRNG — deterministic per seed
 function mulberry32(a: number) {
@@ -38,138 +43,178 @@ function chunkSeed(cx: number, cy: number): number {
 
 /**
  * Build the hand-crafted chunk (0,0) tile grid.
- * This mirrors the grazing.html chunk(0,0) layout.
+ * Must match the client layout in commons-v2/src/map/chunk.ts generateChunk00 exactly.
+ * Client uses row-major Uint8Array[] indexed [row][col]; server uses col-major number[][x][y].
+ * Both must agree on which tiles are solid so NPC walkability matches what players see.
+ *
+ * Client layout (row,col):
+ *   Horizontal path: rows 17-18, all cols
+ *   Vertical path: all rows, cols 24-25
+ *   Pond: rows 22-27, cols 4-10
+ *   Congress building: rows 2-6, cols 2-8
+ *   Building top-right: rows 2-6, cols 40-47
+ *   Building bottom-right: rows 26-31, cols 38-46
+ *   Trees: scattered (see list below)
+ *   Rocks: scattered (see list below)
+ *   Fountain: rows 13-15, cols 19-21
  */
 function buildChunk00(): number[][] {
-  const W = CHUNK_TILES_W;
-  const H = CHUNK_TILES_H;
+  const W = CHUNK_TILES_W; // 50 cols
+  const H = CHUNK_TILES_H; // 35 rows
+  // Stored as tiles[col][row] (x,y) — same access pattern as before
   const tiles: number[][] = Array.from({ length: W }, () => Array(H).fill(TILE.GRASS));
 
-  // Cross paths
-  for (let x = 0; x < W; x++) tiles[x][9] = TILE.PATH;    // horizontal mid path
-  for (let y = 0; y < H; y++) tiles[12][y] = TILE.PATH;   // vertical mid path
+  const set = (col: number, row: number, t: number) => {
+    if (col >= 0 && col < W && row >= 0 && row < H) tiles[col][row] = t;
+  };
 
-  // Congress building at tiles (2-8, 2-6)
-  for (let x = 2; x <= 8; x++) {
-    for (let y = 2; y <= 6; y++) {
-      tiles[x][y] = TILE.BUILDING;
-    }
+  // Horizontal path: rows 17-18, all cols
+  for (let c = 0; c < W; c++) {
+    set(c, 17, TILE.PATH);
+    set(c, 18, TILE.PATH);
   }
-  // Doorway at (5,5) — override to path so NPCs can enter
-  tiles[5][5] = TILE.PATH;
-  tiles[5][6] = TILE.PATH;
+  // Vertical path: all rows, cols 24-25
+  for (let r = 0; r < H; r++) {
+    set(24, r, TILE.PATH);
+    set(25, r, TILE.PATH);
+  }
 
-  // Pond (water) — roughly 3 tiles around (18, 5)
-  const pondCenterX = 18, pondCenterY = 5;
-  for (let dx = -2; dx <= 2; dx++) {
-    for (let dy = -2; dy <= 2; dy++) {
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist <= 2) {
-        const tx = pondCenterX + dx;
-        const ty = pondCenterY + dy;
-        if (tx >= 0 && tx < W && ty >= 0 && ty < H) {
-          tiles[tx][ty] = TILE.WATER;
-        }
-      }
+  // Pond: rows 22-27, cols 4-10
+  for (let r = 22; r <= 27; r++) {
+    for (let c = 4; c <= 10; c++) {
+      set(c, r, TILE.WATER);
     }
   }
 
-  // Small building (right side)
-  for (let x = 16; x <= 20; x++) {
-    for (let y = 12; y <= 16; y++) {
-      tiles[x][y] = TILE.BUILDING;
+  // Congress building: rows 2-6, cols 2-8
+  for (let r = 2; r <= 6; r++) {
+    for (let c = 2; c <= 8; c++) {
+      set(c, r, TILE.BUILDING);
     }
   }
 
-  // Fountain 3×3 at center area around (12, 9) — tile intersection
-  // Actually near the path intersection — use coords (11,8)
-  tiles[11][8] = TILE.FOUNTAIN;
-  tiles[12][8] = TILE.FOUNTAIN;
-  tiles[11][9] = TILE.PATH;  // path stays walkable through fountain area
-  tiles[13][8] = TILE.FOUNTAIN;
+  // Building top-right: rows 2-6, cols 40-47
+  for (let r = 2; r <= 6; r++) {
+    for (let c = 40; c <= 47; c++) {
+      set(c, r, TILE.BUILDING);
+    }
+  }
 
-  // Some trees scattered
+  // Building bottom-right: rows 26-31, cols 38-46
+  for (let r = 26; r <= 31; r++) {
+    for (let c = 38; c <= 46; c++) {
+      set(c, r, TILE.BUILDING);
+    }
+  }
+
+  // Trees (matching client)
   const treeTiles: [number, number][] = [
-    [1, 1], [3, 14], [6, 15], [20, 2], [22, 3],
-    [23, 12], [22, 15], [8, 17], [2, 17], [15, 1],
+    [1,1],[12,1],[35,1],[48,1],
+    [3,8],[14,8],[38,8],[47,8],
+    [10,10],[30,10],[45,10],
+    [2,14],[20,14],[44,14],
+    [5,20],[15,20],[35,20],[48,20],
+    [18,22],[40,22],
+    [3,28],[20,28],[47,28],
+    [8,32],[30,32],[46,32],
+    [1,33],[48,33],
+    [14,34],[35,34],
   ];
-  for (const [tx, ty] of treeTiles) {
-    if (tiles[tx][ty] === TILE.GRASS) {
-      tiles[tx][ty] = TILE.TREE;
+  for (const [tc, tr] of treeTiles) {
+    if (tc < W && tr < H && tiles[tc][tr] === TILE.GRASS) {
+      tiles[tc][tr] = TILE.TREE;
     }
   }
 
-  // Rocks
+  // Rocks (matching client)
   const rockTiles: [number, number][] = [
-    [9, 13], [21, 8], [4, 11],
+    [22,9],[40,11],[12,15],[32,16],[27,21],[14,25],[35,29],[12,31],[40,33],
   ];
-  for (const [tx, ty] of rockTiles) {
-    if (tiles[tx][ty] === TILE.GRASS) {
-      tiles[tx][ty] = TILE.ROCK;
+  for (const [rc, rr] of rockTiles) {
+    if (rc < W && rr < H && tiles[rc][rr] === TILE.GRASS) {
+      tiles[rc][rr] = TILE.ROCK;
     }
   }
 
-  // Path from congress building to main cross-path
-  for (let y = 6; y <= 9; y++) tiles[5][y] = TILE.PATH;
-  for (let x = 5; x <= 12; x++) tiles[x][6] = TILE.PATH;
+  // Fountain: rows 13-15, cols 19-21
+  for (let r = 13; r <= 15; r++) {
+    for (let c = 19; c <= 21; c++) {
+      set(c, r, TILE.FOUNTAIN);
+    }
+  }
 
   return tiles;
 }
 
 /**
  * Build a procedurally generated chunk using deterministic PRNG.
+ * Must match client's generateChunk logic in commons-v2/src/map/chunk.ts.
  */
 function buildProceduralChunk(cx: number, cy: number): number[][] {
-  const W = CHUNK_TILES_W;
-  const H = CHUNK_TILES_H;
+  const W = CHUNK_TILES_W; // 50 cols
+  const H = CHUNK_TILES_H; // 35 rows
   const rand = mulberry32(chunkSeed(cx, cy));
   const tiles: number[][] = Array.from({ length: W }, () => Array(H).fill(TILE.GRASS));
 
-  // Trees ~10%
-  for (let x = 0; x < W; x++) {
-    for (let y = 0; y < H; y++) {
-      if (rand() < 0.10) tiles[x][y] = TILE.TREE;
+  // Trees ~10% — keep 2-tile border clear
+  for (let r = 2; r < H - 2; r++) {
+    for (let c = 2; c < W - 2; c++) {
+      const inCenter = (c >= 15 && c <= 35 && r >= 12 && r <= 23);
+      if (inCenter) continue;
+      if (rand() < 0.10) tiles[c][r] = TILE.TREE;
     }
   }
 
-  // Water ponds (1-2 per chunk)
-  const numPonds = rand() < 0.5 ? 1 : 2;
+  // Water ponds (1-3)
+  const numPonds = 1 + Math.floor(rand() * 3);
   for (let p = 0; p < numPonds; p++) {
-    const px = Math.floor(rand() * (W - 6)) + 3;
-    const py = Math.floor(rand() * (H - 6)) + 3;
-    const radius = 1 + Math.floor(rand() * 2);
-    for (let dx = -radius; dx <= radius; dx++) {
-      for (let dy = -radius; dy <= radius; dy++) {
-        if (Math.sqrt(dx * dx + dy * dy) <= radius) {
-          const tx = px + dx;
-          const ty = py + dy;
-          if (tx >= 0 && tx < W && ty >= 0 && ty < H) {
-            tiles[tx][ty] = TILE.WATER;
-          }
-        }
+    const pr = 5 + Math.floor(rand() * (H - 12));
+    const pc = 5 + Math.floor(rand() * (W - 12));
+    const pw = 3 + Math.floor(rand() * 5);
+    const ph = 2 + Math.floor(rand() * 4);
+    for (let wr = pr; wr < Math.min(pr + ph, H - 3); wr++) {
+      for (let wc = pc; wc < Math.min(pc + pw, W - 3); wc++) {
+        tiles[wc][wr] = TILE.WATER;
       }
     }
   }
 
   // Rocks
-  for (let i = 0; i < 3; i++) {
-    const rx = Math.floor(rand() * W);
-    const ry = Math.floor(rand() * H);
-    if (tiles[rx][ry] === TILE.GRASS) tiles[rx][ry] = TILE.ROCK;
+  const numRocks = 3 + Math.floor(rand() * 6);
+  for (let k = 0; k < numRocks; k++) {
+    const rr = 2 + Math.floor(rand() * (H - 4));
+    const rc = 2 + Math.floor(rand() * (W - 4));
+    if (tiles[rc][rr] === TILE.GRASS) tiles[rc][rr] = TILE.ROCK;
   }
 
-  // Entry/exit corridors cleared (connect to adjacent chunks)
-  const midH = Math.floor(H / 2);
-  const midW = Math.floor(W / 2);
-  for (let y = midH - 1; y <= midH + 1; y++) {
-    for (let x = 0; x < W; x++) {
-      tiles[x][y] = TILE.PATH;
+  // Path corridors
+  const numPaths = 1 + Math.floor(rand() * 2);
+  for (let pp = 0; pp < numPaths; pp++) {
+    if (rand() < 0.5) {
+      const pathRow = 3 + Math.floor(rand() * (H - 6));
+      for (let c = 0; c < W; c++) {
+        if (tiles[c][pathRow] === TILE.TREE || tiles[c][pathRow] === TILE.ROCK) tiles[c][pathRow] = TILE.PATH;
+      }
+    } else {
+      const pathCol = 3 + Math.floor(rand() * (W - 6));
+      for (let r = 0; r < H; r++) {
+        if (tiles[pathCol][r] === TILE.TREE || tiles[pathCol][r] === TILE.ROCK) tiles[pathCol][r] = TILE.PATH;
+      }
     }
   }
-  for (let x = midW - 1; x <= midW + 1; x++) {
-    for (let y = 0; y < H; y++) {
-      tiles[x][y] = TILE.PATH;
-    }
+
+  // Clear entry/exit corridors at each edge (middle 10 tiles)
+  const midC = Math.floor(W / 2);
+  const midR = Math.floor(H / 2);
+  for (let i = -5; i <= 5; i++) {
+    if (tiles[midC + i]?.[0] !== 0) tiles[midC + i][0] = TILE.GRASS;
+    if (tiles[midC + i]?.[1] !== 0) tiles[midC + i][1] = TILE.GRASS;
+    if (tiles[midC + i]?.[H - 1] !== 0) tiles[midC + i][H - 1] = TILE.GRASS;
+    if (tiles[midC + i]?.[H - 2] !== 0) tiles[midC + i][H - 2] = TILE.GRASS;
+    if (tiles[0]?.[midR + i] !== 0) tiles[0][midR + i] = TILE.GRASS;
+    if (tiles[1]?.[midR + i] !== 0) tiles[1][midR + i] = TILE.GRASS;
+    if (tiles[W - 1]?.[midR + i] !== 0) tiles[W - 1][midR + i] = TILE.GRASS;
+    if (tiles[W - 2]?.[midR + i] !== 0) tiles[W - 2][midR + i] = TILE.GRASS;
   }
 
   return tiles;

@@ -225,7 +225,7 @@ function hasNpcsChanged(current: Map<string, NPCState>, last: NPCState[]): boole
   for (let i = 0; i < currArray.length; i++) {
     const c = currArray[i];
     const l = last[i];
-    if (!l || c.x !== l.x || c.y !== l.y || c.facing !== l.facing) return true;
+    if (!l || c.x !== l.x || c.y !== l.y || c.facing !== l.facing || c.blurb !== l.blurb) return true;
   }
   return false;
 }

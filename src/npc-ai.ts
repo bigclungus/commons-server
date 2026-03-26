@@ -2,6 +2,7 @@
 
 import type { NPCState, ChunkData } from "./protocol.ts";
 import { CHUNK_TILES_W, CHUNK_TILES_H, TILE_SIZE } from "./map.ts";
+// CHUNK_TILES_W=50 (cols), CHUNK_TILES_H=35 (rows), TILE_SIZE=20px — must match client
 
 // ─── Persona configs ─────────────────────────────────────────────────────────
 
@@ -27,30 +28,34 @@ export const NPC_PATTERNS: Record<string, { speed: number; behavior: string }> =
   "the-correspondent": { speed: 0.9, behavior: "pacing" },
 };
 
-// Congress gathering target (pixel coords of council building doorway area)
-const COUNCIL_TARGET = { x: 5 * TILE_SIZE + 16, y: 5 * TILE_SIZE + 16 };
+// Congress gathering target — congress building doorway is at client col 5, row 6 (path tile below building)
+// Pixel coords: col 5 * TILE_SIZE + half tile, row 6 * TILE_SIZE + half tile
+const COUNCIL_TARGET = { x: 5 * TILE_SIZE + TILE_SIZE / 2, y: 7 * TILE_SIZE + TILE_SIZE / 2 };
 
-// Initial NPC positions spread around chunk (0,0)
+// Initial NPC positions spread around chunk (0,0).
+// Canvas is 1000×700 (TILE=20, COLS=50, ROWS=35).
+// NPCs spawn in the open grass area away from the pond (rows 22-27, cols 4-10)
+// and the congress building (rows 2-6, cols 2-8) and fountain (rows 13-15, cols 19-21).
 const NPC_SPAWN_POSITIONS: Record<string, { x: number; y: number }> = {
-  chairman:    { x: 400, y: 280 },
-  critic:      { x: 300, y: 350 },
-  architect:   { x: 250, y: 180 },
-  ux:          { x: 450, y: 200 },
-  designer:    { x: 520, y: 350 },
-  galactus:    { x: 200, y: 420 },
-  hume:        { x: 350, y: 450 },
-  otto:        { x: 600, y: 280 },
-  pm:          { x: 480, y: 420 },
-  spengler:    { x: 140, y: 300 },
-  trump:       { x: 650, y: 180 },
-  "uncle-bob": { x: 320, y: 250 },
-  bloodfeast:  { x: 700, y: 450 },
-  adelbert:    { x: 550, y: 480 },
-  jhaddu:      { x: 420, y: 500 },
-  morgan:      { x: 260, y: 490 },
-  "the-kid":   { x: 600, y: 400 },
-  chaz:            { x: 380, y: 320 },
-  "the-correspondent": { x: 460, y: 460 },
+  chairman:    { x: 480, y: 360 },  // near path intersection
+  critic:      { x: 300, y: 400 },
+  architect:   { x: 260, y: 220 },
+  ux:          { x: 560, y: 240 },
+  designer:    { x: 620, y: 340 },
+  galactus:    { x: 360, y: 480 },
+  hume:        { x: 420, y: 520 },
+  otto:        { x: 680, y: 300 },
+  pm:          { x: 540, y: 460 },
+  spengler:    { x: 160, y: 340 },
+  trump:       { x: 720, y: 200 },
+  "uncle-bob": { x: 340, y: 280 },
+  bloodfeast:  { x: 760, y: 460 },
+  adelbert:    { x: 600, y: 500 },
+  jhaddu:      { x: 460, y: 560 },
+  morgan:      { x: 280, y: 550 },
+  "the-kid":   { x: 640, y: 420 },
+  chaz:            { x: 400, y: 320 },
+  "the-correspondent": { x: 500, y: 480 },
 };
 
 // Per-NPC pacing state (for deterministic patterns)
@@ -74,11 +79,12 @@ export function initNpcs(): Map<string, NPCState> {
     pacingState.set(name, { ticksOnCurrent: 0, maxTicks: 20 + Math.floor(Math.random() * 40) });
     circularState.set(name, { angle: Math.random() * Math.PI * 2 });
     directedState.set(name, {
-      targetX: 200 + Math.random() * 400,
-      targetY: 150 + Math.random() * 300,
+      targetX: 200 + Math.random() * 600,
+      targetY: 150 + Math.random() * 400,
       stuckTicks: 0,
     });
   }
+  initBlurbState(Array.from(npcs.keys()));
   return npcs;
 }
 
@@ -164,6 +170,84 @@ export function getCurrentSeason(): "spring" | "summer" | "autumn" | "winter" {
   return seasons[week % 4];
 }
 
+// ─── Persona quips ────────────────────────────────────────────────────────────
+
+const NPC_QUIPS: Record<string, string[]> = {
+  chairman:    ["Order.", "The gavel is patient.", "...", "Retained.", "The record stands.", "Deliberate."],
+  critic:      ["That's wrong.", "Prove it works.", "No.", "Show your data.", "Unacceptable.", "Rejected."],
+  architect:   ["Consider the load.", "What scales here?", "Draw the diagram.", "Single source.", "Decouple this.", "The foundation matters."],
+  ux:          ["Is this usable?", "Who's the user?", "Friction is failure.", "Test with humans.", "Accessibility first.", "Can my gran do it?"],
+  galactus:    ["I HUNGER.", "YOUR SYSTEMS WILL FEED ME.", "INCONSEQUENTIAL.", "I HAVE SEEN BILLIONS OF STACKS.", "MORTAL CODE.", "FEED ME YOUR DATA."],
+  designer:    ["Aesthetically, no.", "More contrast.", "Wrong font.", "The kerning is off.", "Iterate the palette.", "Beauty is function."],
+  "the-kid":   ["FAST", "GO GO GO", "*zooms*", "CAN'T STOP", "SPEEEEED", "AAAA"],
+  "uncle-bob": ["Clean this up.", "SOLID.", "One responsibility.", "Extract that method.", "No comments needed.", "Meaningful names."],
+  adelbert:    ["I know what you did.", "Classic Yuki move.", "Interesting choice.", "I remember.", "Some of us are watching.", "As expected."],
+  spengler:    ["Doomed.", "We had a good run.", "The entropy is winning.", "I called it.", "Everything decays.", "*sighs*"],
+  otto:        ["Chaos is order.", "I see patterns.", "Everything connects.", "The vortex knows.", "Cycles within cycles.", "Observe the flow."],
+  hume:        ["Where's the evidence?", "Show me the data.", "That's speculation.", "Observation first.", "Prove it empirically.", "I reject the a priori."],
+  bloodfeast:  ["OVERWHELMING FORCE.", "Half measures lose wars.", "Commit or go home.", "I've seen weak plans fail.", "No phased rollout. Deploy.", "The Soviets wouldn't phase."],
+  pm:          ["Does this move the needle?", "Cut scope.", "Ship something.", "What's the outcome?", "That's not a requirement.", "Validate it first."],
+  trump:       ["Tremendous.", "Nobody does it better.", "Big. Very big.", "I win. That's what I do.", "They said it couldn't be done.", "Believe me."],
+  morgan:      ["I need to sit with that.", "That's a lot to unpack.", "I'm not sure I have bandwidth.", "That lands differently for me.", "We should hold space here.", "I felt that."],
+  jhaddu:      ["As we learned at SVITEMS...", "Simply apply the Factory pattern.", "One more layer of abstraction.", "This is very simple, actually.", "The Enterprise Approach is...", "AbstractRepositoryManagerFactory."],
+  chaz:        ["Vibe check.", "That's giving.", "No cap.", "Understood the assignment.", "Not it.", "Main character energy."],
+  "the-correspondent": ["Per my last email...", "Following up.", "To be clear.", "For the record.", "With respect.", "As previously discussed."],
+};
+const DEFAULT_QUIPS = ["...", "hmm.", "processing.", "interesting.", "noted.", "ok."];
+
+// Per-NPC blurb state — tracks index and cooldown
+const blurbState: Map<string, { cooldownTicks: number; quipIndex: number }> = new Map();
+
+// Blurb TTL in ticks (20Hz → 150 ticks = 7.5s)
+const BLURB_TTL_TICKS = 150;
+// Blurb cooldown: random 30-60s → 600-1200 ticks
+const BLURB_COOLDOWN_MIN = 600;
+const BLURB_COOLDOWN_RANGE = 600;
+
+export function initBlurbState(names: string[]): void {
+  for (const name of names) {
+    // Stagger initial cooldowns so NPCs don't all talk at once
+    blurbState.set(name, {
+      cooldownTicks: Math.floor(Math.random() * BLURB_COOLDOWN_RANGE),
+      quipIndex: Math.floor(Math.random() * ((NPC_QUIPS[name] ?? DEFAULT_QUIPS).length)),
+    });
+  }
+}
+
+/**
+ * Tick blurb state for all NPCs. Assigns blurbs and decrements TTLs.
+ * Returns a Set of NPC names whose blurb changed (for delta detection).
+ */
+export function tickBlurbs(npcs: Map<string, NPCState>): Set<string> {
+  const changed = new Set<string>();
+  for (const npc of npcs.values()) {
+    const state = blurbState.get(npc.name);
+    if (!state) continue;
+
+    // Decrement active blurb TTL
+    if (npc.blurbTtl !== undefined && npc.blurbTtl > 0) {
+      npc.blurbTtl--;
+      if (npc.blurbTtl <= 0) {
+        npc.blurb = undefined;
+        npc.blurbTtl = undefined;
+        changed.add(npc.name);
+        // Start cooldown after blurb expires
+        state.cooldownTicks = BLURB_COOLDOWN_MIN + Math.floor(Math.random() * BLURB_COOLDOWN_RANGE);
+      }
+    } else if (state.cooldownTicks > 0) {
+      state.cooldownTicks--;
+    } else {
+      // Cooldown expired — emit next quip
+      const quips = NPC_QUIPS[npc.name] ?? DEFAULT_QUIPS;
+      npc.blurb = quips[state.quipIndex % quips.length];
+      npc.blurbTtl = BLURB_TTL_TICKS;
+      state.quipIndex++;
+      changed.add(npc.name);
+    }
+  }
+  return changed;
+}
+
 // ─── Per-behavior update functions ───────────────────────────────────────────
 
 function applyWander(npc: NPCState, speed: number, walkable: boolean[][]): void {
@@ -218,9 +302,9 @@ function applyDirected(npc: NPCState, speed: number, walkable: boolean[][]): voi
   const state = directedState.get(npc.name)!;
   const dist = Math.sqrt((state.targetX - npc.x) ** 2 + (state.targetY - npc.y) ** 2);
   if (dist < speed * 2 || state.stuckTicks > 40) {
-    // Pick new target
-    state.targetX = 100 + Math.random() * 600;
-    state.targetY = 100 + Math.random() * 400;
+    // Pick new target within canvas bounds (1000×700)
+    state.targetX = 100 + Math.random() * 800;
+    state.targetY = 100 + Math.random() * 500;
     state.stuckTicks = 0;
   } else {
     const step = greedyStep(npc.x, npc.y, state.targetX, state.targetY, speed, walkable);
@@ -253,6 +337,8 @@ export function tickNpcs(
   chunks: Map<string, ChunkData>,
   congressActive: boolean
 ): void {
+  // Tick blurbs (independently of movement)
+  tickBlurbs(npcs);
   const chunk = chunks.get("0:0"); // NPCs stay in chunk (0,0) for Phase 1-3
   if (!chunk) return;
 
@@ -306,9 +392,9 @@ export function tickNpcs(
       }
     }
 
-    // Clamp to chunk bounds (pixel space)
-    const maxX = (chunk.tiles.length - 1) * TILE_SIZE;
-    const maxY = (chunk.tiles[0].length - 1) * TILE_SIZE;
+    // Clamp to chunk bounds (pixel space) — CHUNK_TILES_W=50, CHUNK_TILES_H=35, TILE_SIZE=20
+    const maxX = CHUNK_TILES_W * TILE_SIZE;  // 1000
+    const maxY = CHUNK_TILES_H * TILE_SIZE;  // 700
     npc.x = Math.max(TILE_SIZE, Math.min(maxX - TILE_SIZE, npc.x));
     npc.y = Math.max(TILE_SIZE, Math.min(maxY - TILE_SIZE, npc.y));
 
