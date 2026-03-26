@@ -133,13 +133,22 @@ const bunServer = serve<SocketData>({
 
     // Admin: toggle congress state (internal use)
     if (url.pathname === "/admin/congress" && req.method === "POST") {
-      return req.json().then((body: { active: boolean }) => {
-        world.congress.active = !!body.active;
-        console.log(`[admin] Congress active: ${world.congress.active}`);
-        return new Response(JSON.stringify({ active: world.congress.active }), {
-          headers: { "Content-Type": "application/json" },
-        });
-      });
+      return req.json().then(
+        (body: { active: boolean }) => {
+          world.congress.active = !!body.active;
+          console.log(`[admin] Congress active: ${world.congress.active}`);
+          return new Response(JSON.stringify({ active: world.congress.active }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        },
+        (err) => {
+          console.error("[admin] Congress toggle failed to parse body:", err);
+          return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      );
     }
 
     return new Response("Not found", { status: 404 });
