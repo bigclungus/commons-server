@@ -15,6 +15,7 @@ export interface TickMessage extends ServerToClientBase {
   npcs?: NPCState[];                    // Delta: only if changed since last tick
   congress?: { active: boolean };       // Delta: only if changed
   warthog?: WarthogState;               // Delta: only if changed
+  serverTime: number;                   // Server wall-clock ms — clients derive day/night from this
 }
 
 export type ServerToClientMessage = TickMessage;

@@ -258,6 +258,7 @@ export function buildTickPayload(
     type: "tick",
     seq,
     t: now,
+    serverTime: now,
     lastProcessedInput: chunkPlayers[0]?.lastProcessedInput ?? 0,
     players: Object.fromEntries(chunkPlayers.map((p) => [p.socketId, p])),
   };
