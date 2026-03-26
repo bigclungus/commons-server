@@ -21,7 +21,7 @@ import { persistState } from "./persistence.ts";
 // Client moves ~1.8px/frame at 60fps, TILE=20px → ~5.4px/frame → ~0.27 tiles/frame
 // At 20Hz server tick: 60/20 = 3 frames per tick → ~0.81 tiles/tick, × 3 tolerance = ~2.5
 // Using 5 to be generous for lag/burst
-const MAX_MOVE_PER_TICK = 5; // tiles
+const MAX_MOVE_PER_TICK = 20; // pixels — V2 client moves at ~1.8px/frame, 20Hz tick = up to ~9px/tick; allow extra for lag
 
 // Stale player eviction threshold
 const STALE_THRESHOLD = 60 * 1000; // 60s

@@ -160,8 +160,8 @@ const bunServer = serve<SocketData>({
         socketId,
         name,
         color,
-        x: 25, // tile coords — client grid is 50×35 tiles, center = (25, 17)
-        y: 17,
+        x: 500, // pixel coords — V2 client canvas is 1000×700, center = (500, 350)
+        y: 350,
         facing: "right",
         hopFrame: 0,
         isAway: false,
@@ -173,16 +173,19 @@ const bunServer = serve<SocketData>({
       world.players.set(socketId, player);
       console.log(`[ws] Player ${name} (${userId}) connected — socketId=${socketId}`);
 
+      // Send welcome message first so client knows its own socketId
+      ws.send(JSON.stringify({ type: "welcome", socket_id: socketId }));
+
       // Send immediate full state to new player
       const chunkPlayers = Array.from(world.players.values()).filter(
         (p) => p.chunkX === chunkX && p.chunkY === chunkY
       );
-      const welcome = buildTickPayload(world, chunkKey, chunkPlayers, world.tickCount, Date.now());
+      const initialTick = buildTickPayload(world, chunkKey, chunkPlayers, world.tickCount, Date.now());
       // Force NPC/warthog/congress into welcome even if no delta
-      welcome.npcs = Array.from(world.npcs.values());
-      welcome.warthog = { ...world.warthog, seats: [...world.warthog.seats] };
-      welcome.congress = { active: world.congress.active };
-      ws.send(JSON.stringify(welcome));
+      initialTick.npcs = Array.from(world.npcs.values());
+      initialTick.warthog = { ...world.warthog, seats: [...world.warthog.seats] };
+      initialTick.congress = { active: world.congress.active };
+      ws.send(JSON.stringify(initialTick));
     },
 
     message(ws, rawMessage) {
