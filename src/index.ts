@@ -1,0 +1,289 @@
+// Commons Game Server — Bun WS on :8090
+// Phases 1 & 2: tile-aware NPC AI, SQLite, 20Hz tick, player validation, delta snapshots
+
+import { serve } from "bun";
+import type {
+  WorldState,
+  PlayerState,
+  ClientToServerMessage,
+  WornPathMessage,
+} from "./protocol.ts";
+import { buildChunk } from "./map.ts";
+import { initNpcs } from "./npc-ai.ts";
+import {
+  runTick,
+  handleClientMessage,
+  setChunkSubscriptionCallback,
+  setForceSyncCallback,
+  buildTickPayload,
+  type BroadcastFn,
+} from "./game-loop.ts";
+import { loadNpcPositions, recordWornPath, persistState } from "./persistence.ts";
+import { handleWalkerInteraction } from "./game-loop.ts";
+
+// ─── World state initialisation ──────────────────────────────────────────────
+
+const npcs = initNpcs();
+
+// Restore persisted NPC positions if available
+try {
+  const savedPositions = loadNpcPositions();
+  for (const [name, pos] of savedPositions) {
+    const npc = npcs.get(name);
+    if (npc) {
+      npc.x = pos.x;
+      npc.y = pos.y;
+      npc.facing = (pos.facing === "left" || pos.facing === "right") ? pos.facing : "right";
+      console.log(`[init] Restored NPC ${name} position from DB`);
+    }
+  }
+} catch (err) {
+  console.warn("[init] Could not load NPC positions from DB:", err);
+}
+
+const chunks = new Map<string, ReturnType<typeof buildChunk>>();
+// Pre-load chunk (0,0) since NPCs live there
+chunks.set("0:0", buildChunk(0, 0));
+
+const world: WorldState = {
+  players: new Map(),
+  npcs,
+  warthog: {
+    x: 350,
+    y: 280,
+    vx: 0,
+    vy: 0,
+    facing: "right",
+    seats: [null, null, null, null],
+  },
+  walkers: [],
+  congress: { active: false },
+  chunks,
+  tickCount: 0,
+};
+
+// ─── WebSocket socket data type ──────────────────────────────────────────────
+
+interface SocketData {
+  userId: string;
+  name: string;
+  color: string;
+  socketId: string;
+  chunkX: number;
+  chunkY: number;
+  lastSeen: number;
+}
+
+// ─── Congress state polling ───────────────────────────────────────────────────
+
+async function pollCongressState(): Promise<void> {
+  try {
+    const res = await fetch("http://localhost:8081/api/congress/state", { signal: AbortSignal.timeout(3000) });
+    if (res.ok) {
+      const data = await res.json() as { active?: boolean };
+      world.congress.active = !!data.active;
+    }
+  } catch {
+    // Clunger may not be available; keep current congress state
+  }
+}
+
+// Poll congress state every 10s
+setInterval(() => {
+  pollCongressState().catch((err) => console.error("[congress-poll] Error:", err));
+}, 10_000);
+
+// ─── Bun server setup ─────────────────────────────────────────────────────────
+
+const bunServer = serve<SocketData>({
+  port: 8090,
+
+  fetch(req, server) {
+    const url = new URL(req.url);
+
+    // WebSocket upgrade
+    if (url.pathname === "/ws") {
+      const userId = url.searchParams.get("userId") ?? "anonymous";
+      const name = url.searchParams.get("name") ?? "unknown";
+      const color = url.searchParams.get("color") ?? "#ffffff";
+      const socketId = `${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+      const upgraded = server.upgrade(req, {
+        data: {
+          userId,
+          name,
+          color,
+          socketId,
+          chunkX: 0,
+          chunkY: 0,
+          lastSeen: Date.now(),
+        } satisfies SocketData,
+      });
+      if (upgraded) return undefined;
+      return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
+    // Health check
+    if (url.pathname === "/health") {
+      return new Response(
+        JSON.stringify({ status: "ok", players: world.players.size, tick: world.tickCount }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    // Admin: toggle congress state (internal use)
+    if (url.pathname === "/admin/congress" && req.method === "POST") {
+      return req.json().then((body: { active: boolean }) => {
+        world.congress.active = !!body.active;
+        console.log(`[admin] Congress active: ${world.congress.active}`);
+        return new Response(JSON.stringify({ active: world.congress.active }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+    }
+
+    return new Response("Not found", { status: 404 });
+  },
+
+  websocket: {
+    open(ws) {
+      const { socketId, chunkX, chunkY, name, color, userId } = ws.data;
+      ws.subscribe(`chunk:${chunkX}:${chunkY}`);
+
+      // Ensure chunk data is loaded
+      const chunkKey = `${chunkX}:${chunkY}`;
+      if (!world.chunks.has(chunkKey)) {
+        world.chunks.set(chunkKey, buildChunk(chunkX, chunkY));
+      }
+
+      const player: PlayerState = {
+        socketId,
+        name,
+        color,
+        x: 400,
+        y: 300,
+        facing: "right",
+        hopFrame: 0,
+        isAway: false,
+        chunkX,
+        chunkY,
+        lastSeen: Date.now(),
+        lastProcessedInput: 0,
+      };
+      world.players.set(socketId, player);
+      console.log(`[ws] Player ${name} (${userId}) connected — socketId=${socketId}`);
+
+      // Send immediate full state to new player
+      const chunkPlayers = Array.from(world.players.values()).filter(
+        (p) => p.chunkX === chunkX && p.chunkY === chunkY
+      );
+      const welcome = buildTickPayload(world, chunkKey, chunkPlayers, world.tickCount, Date.now());
+      // Force NPC/warthog/congress into welcome even if no delta
+      welcome.npcs = Array.from(world.npcs.values());
+      welcome.warthog = { ...world.warthog, seats: [...world.warthog.seats] };
+      welcome.congress = { active: world.congress.active };
+      ws.send(JSON.stringify(welcome));
+    },
+
+    message(ws, rawMessage) {
+      const { socketId } = ws.data;
+      const player = world.players.get(socketId);
+      if (!player) return;
+
+      player.lastSeen = Date.now();
+      ws.data.lastSeen = player.lastSeen;
+
+      let msg: ClientToServerMessage;
+      try {
+        msg = JSON.parse(rawMessage.toString()) as ClientToServerMessage;
+      } catch (err) {
+        console.error(`[ws] Invalid JSON from ${socketId}:`, err);
+        return;
+      }
+
+      // worn_path needs async SQLite write — handle separately
+      if (msg.type === "worn_path") {
+        const wpm = msg as WornPathMessage;
+        recordWornPath(wpm.chunkX, wpm.chunkY, wpm.tileX, wpm.tileY);
+        return;
+      }
+
+      handleClientMessage(socketId, msg, world);
+    },
+
+    close(ws) {
+      const { socketId, chunkX, chunkY, name } = ws.data;
+      ws.unsubscribe(`chunk:${chunkX}:${chunkY}`);
+
+      // Remove from warthog seats if present
+      const seatIdx = world.warthog.seats.indexOf(socketId);
+      if (seatIdx >= 0) {
+        world.warthog.seats[seatIdx] = null;
+      }
+
+      world.players.delete(socketId);
+      console.log(`[ws] Player ${name} disconnected (${socketId})`);
+    },
+
+    idleTimeout: 30,
+  },
+});
+
+// ─── Chunk subscription callback ─────────────────────────────────────────────
+
+setChunkSubscriptionCallback((socketId, oldChunkX, oldChunkY, newChunkX, newChunkY) => {
+  // Find the ServerWebSocket for this socketId
+  // Bun doesn't expose a lookup — we rely on the world.players map for state,
+  // but the WS subscription is managed via ws.subscribe/unsubscribe in handlers.
+  // Since we can't look up ws by socketId here, chunk pub/sub re-subscription
+  // happens when the player sends their next "chunk" message via the ws handler.
+  // The player will still receive ticks in their new chunk after the update.
+
+  // Ensure new chunk data is loaded
+  const newKey = `${newChunkX}:${newChunkY}`;
+  if (!world.chunks.has(newKey)) {
+    world.chunks.set(newKey, buildChunk(newChunkX, newChunkY));
+  }
+});
+
+setForceSyncCallback((_socketId: string) => {
+  // Full resync will happen on next broadcast since we always send all players
+});
+
+// ─── Broadcast helper ─────────────────────────────────────────────────────────
+
+const broadcast: BroadcastFn = (chunkX, chunkY, payload) => {
+  bunServer.publish(`chunk:${chunkX}:${chunkY}`, payload);
+};
+
+// ─── 20Hz game tick loop ─────────────────────────────────────────────────────
+
+const tickInterval = setInterval(() => {
+  try {
+    runTick(world, broadcast);
+  } catch (err) {
+    console.error("[game-loop] Tick error:", err);
+    // Don't swallow — but don't crash the whole server either; log and continue
+  }
+}, 50); // 20Hz
+
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+
+process.on("SIGTERM", () => {
+  console.log("[commons-server] SIGTERM received — flushing state and shutting down");
+  clearInterval(tickInterval);
+  try {
+    persistState(world);
+  } catch (err) {
+    console.error("[shutdown] Final persist failed:", err);
+  }
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  console.log("[commons-server] SIGINT received — shutting down");
+  clearInterval(tickInterval);
+  process.exit(0);
+});
+
+console.log(`[commons-server] Listening on :8090 — 20Hz tick, ${world.npcs.size} NPCs loaded`);
