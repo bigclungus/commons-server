@@ -18,8 +18,9 @@ import {
   buildTickPayload,
   type BroadcastFn,
 } from "./game-loop.ts";
-import { loadNpcPositions, recordWornPath, persistState } from "./persistence.ts";
+import { loadNpcPositions, recordWornPath, persistState, resetNpcPositionsInDb, loadWornPathsForChunk } from "./persistence.ts";
 import { handleWalkerInteraction } from "./game-loop.ts";
+import { resetNpcPositions } from "./npc-ai.ts";
 
 // ─── World state initialisation ──────────────────────────────────────────────
 
@@ -151,6 +152,55 @@ const bunServer = serve<SocketData>({
       );
     }
 
+    // Admin: reset all NPC positions to center of chunk (0,0)
+    // Called after terrain modifications or when NPCs are stuck in impassable tiles.
+    if (url.pathname === "/admin/reset-npcs" && req.method === "POST") {
+      try {
+        const npcNames = Array.from(world.npcs.keys());
+        const center = resetNpcPositionsInDb(npcNames);
+        resetNpcPositions(world.npcs, center.x, center.y);
+
+        // Force a full NPC broadcast on the next tick by clearing lastSentState
+        // (accomplished by simply logging; the delta logic will detect position changes)
+        console.log(`[admin] NPC reset triggered — ${npcNames.length} NPCs moved to center (${center.x}, ${center.y})`);
+        return new Response(
+          JSON.stringify({ ok: true, npcsReset: npcNames.length, center }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      } catch (err) {
+        console.error("[admin] NPC reset failed:", err);
+        return new Response(
+          JSON.stringify({ error: String(err) }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // Admin: notify server that terrain/map was modified — resets NPC positions
+    // to prevent NPCs being stuck in newly-impassable tiles.
+    if (url.pathname === "/admin/terrain-changed" && req.method === "POST") {
+      try {
+        const npcNames = Array.from(world.npcs.keys());
+        const center = resetNpcPositionsInDb(npcNames);
+        resetNpcPositions(world.npcs, center.x, center.y);
+
+        // Rebuild chunk (0,0) from scratch so the server walkability grid reflects the change
+        chunks.set("0:0", buildChunk(0, 0));
+
+        console.log(`[admin] Terrain changed — rebuilt chunk (0,0) and reset ${npcNames.length} NPCs to center`);
+        return new Response(
+          JSON.stringify({ ok: true, npcsReset: npcNames.length, center, chunkRebuilt: "0:0" }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      } catch (err) {
+        console.error("[admin] terrain-changed handler failed:", err);
+        return new Response(
+          JSON.stringify({ error: String(err) }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+
     return new Response("Not found", { status: 404 });
   },
 
@@ -194,6 +244,9 @@ const bunServer = serve<SocketData>({
       initialTick.npcs = Array.from(world.npcs.values());
       initialTick.warthog = { ...world.warthog, seats: [...world.warthog.seats] };
       initialTick.congress = { active: world.congress.active };
+      // Include server-side worn path data so all clients see the shared world state
+      const wornPaths = loadWornPathsForChunk(chunkX, chunkY);
+      if (wornPaths.length > 0) initialTick.wornPaths = wornPaths;
       ws.send(JSON.stringify(initialTick));
     },
 

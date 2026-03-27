@@ -8,6 +8,12 @@ export interface ServerToClientBase {
   t: number;   // Server timestamp (ms since epoch)
 }
 
+export interface WornPathTile {
+  tileX: number;
+  tileY: number;
+  visitCount: number;
+}
+
 export interface TickMessage extends ServerToClientBase {
   type: "tick";
   lastProcessedInput: number; // For client reconciliation
@@ -16,6 +22,7 @@ export interface TickMessage extends ServerToClientBase {
   congress?: { active: boolean };       // Delta: only if changed
   warthog?: WarthogState;               // Delta: only if changed
   serverTime: number;                   // Server wall-clock ms — clients derive day/night from this
+  wornPaths?: WornPathTile[];           // On-join only: server-side accumulated worn path counts
 }
 
 export type ServerToClientMessage = TickMessage;

@@ -109,3 +109,53 @@ export function recordWornPath(chunkX: number, chunkY: number, tileX: number, ti
     throw err;
   }
 }
+
+const loadWornPathsStmt = db.prepare(
+  "SELECT tile_x, tile_y, visit_count FROM worn_path_tiles WHERE chunk_x = ? AND chunk_y = ?"
+);
+
+export function loadWornPathsForChunk(
+  chunkX: number,
+  chunkY: number
+): { tileX: number; tileY: number; visitCount: number }[] {
+  try {
+    const rows = loadWornPathsStmt.all(chunkX, chunkY) as {
+      tile_x: number;
+      tile_y: number;
+      visit_count: number;
+    }[];
+    return rows.map((r) => ({ tileX: r.tile_x, tileY: r.tile_y, visitCount: r.visit_count }));
+  } catch (err) {
+    console.error("[persistence] loadWornPathsForChunk failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * Reset all NPC positions in the DB to the center of chunk (0,0).
+ * Center is the path intersection at cols 24-25, rows 17-18:
+ *   x = 24 * TILE_SIZE + TILE_SIZE/2 = 490px
+ *   y = 17 * TILE_SIZE + TILE_SIZE/2 = 350px
+ * Returns the target pixel coords so callers can sync in-memory state.
+ */
+export function resetNpcPositionsInDb(npcNames: string[]): { x: number; y: number } {
+  const CENTER_X = 490; // path intersection, walkable, center of chunk (0,0)
+  const CENTER_Y = 350;
+  const now = Date.now();
+  const resetStmt = db.prepare(
+    "INSERT OR REPLACE INTO npc_positions (name, x, y, facing, updated_at) VALUES (?, ?, ?, ?, ?)"
+  );
+  const resetTx = db.transaction(() => {
+    for (const name of npcNames) {
+      resetStmt.run(name, CENTER_X, CENTER_Y, "right", now);
+    }
+  });
+  try {
+    resetTx();
+    console.log(`[persistence] Reset ${npcNames.length} NPC positions to center (${CENTER_X}, ${CENTER_Y})`);
+  } catch (err) {
+    console.error("[persistence] resetNpcPositionsInDb failed:", err);
+    throw err;
+  }
+  return { x: CENTER_X, y: CENTER_Y };
+}
