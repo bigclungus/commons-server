@@ -77,15 +77,21 @@ interface SocketData {
 
 // ─── Congress state polling ───────────────────────────────────────────────────
 
+let congressPollFailures = 0;
+
 async function pollCongressState(): Promise<void> {
   try {
     const res = await fetch("http://localhost:8081/api/congress/state", { signal: AbortSignal.timeout(3000) });
     if (res.ok) {
       const data = await res.json() as { active?: boolean };
       world.congress.active = !!data.active;
+      congressPollFailures = 0;
     }
-  } catch {
-    // Clunger may not be available; keep current congress state
+  } catch (err) {
+    congressPollFailures = (congressPollFailures ?? 0) + 1;
+    if (congressPollFailures === 1 || congressPollFailures % 10 === 0) {
+      console.warn(`[congress-poll] clunger unreachable (${congressPollFailures} failures):`, err);
+    }
   }
 }
 

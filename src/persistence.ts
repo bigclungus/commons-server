@@ -111,7 +111,7 @@ export function recordWornPath(chunkX: number, chunkY: number, tileX: number, ti
 }
 
 const loadWornPathsStmt = db.prepare(
-  "SELECT tile_x, tile_y, visit_count FROM worn_path_tiles WHERE chunk_x = ? AND chunk_y = ?"
+  "SELECT tile_x, tile_y, visit_count FROM worn_path_tiles WHERE chunk_x = ? AND chunk_y = ? ORDER BY visit_count DESC LIMIT 500"
 );
 
 export function loadWornPathsForChunk(
@@ -142,12 +142,9 @@ export function resetNpcPositionsInDb(npcNames: string[]): { x: number; y: numbe
   const CENTER_X = 490; // path intersection, walkable, center of chunk (0,0)
   const CENTER_Y = 350;
   const now = Date.now();
-  const resetStmt = db.prepare(
-    "INSERT OR REPLACE INTO npc_positions (name, x, y, facing, updated_at) VALUES (?, ?, ?, ?, ?)"
-  );
   const resetTx = db.transaction(() => {
     for (const name of npcNames) {
-      resetStmt.run(name, CENTER_X, CENTER_Y, "right", now);
+      saveNpcStmt.run(name, CENTER_X, CENTER_Y, "right", now);
     }
   });
   try {
