@@ -330,6 +330,31 @@ function applyPatternBehavior(npc: NPCState, behavior: string, speed: number, wa
   }
 }
 
+// ─── NPC position reset ──────────────────────────────────────────────────────
+
+/**
+ * Reset all NPC positions to the given pixel coordinates.
+ * Called when terrain changes to unstick NPCs from impassable tiles.
+ */
+export function resetNpcPositions(npcs: Map<string, NPCState>, x: number, y: number): void {
+  for (const npc of npcs.values()) {
+    npc.x = x;
+    npc.y = y;
+    npc.vx = 0;
+    npc.vy = 0;
+    npc.facing = "right";
+    // Clear congress target so NPCs resume normal behavior
+    npc.congressTarget = undefined;
+  }
+  // Reset directed state targets so they don't immediately path back into a bad tile
+  for (const [name, state] of directedState) {
+    state.targetX = x + (Math.random() - 0.5) * 200;
+    state.targetY = y + (Math.random() - 0.5) * 200;
+    state.stuckTicks = 0;
+  }
+  console.log(`[npc-ai] Reset ${npcs.size} NPC positions to (${x}, ${y})`);
+}
+
 // ─── Main NPC tick ───────────────────────────────────────────────────────────
 
 export function tickNpcs(

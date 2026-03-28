@@ -15,7 +15,7 @@ import type {
 } from "./protocol.ts";
 import { tickNpcs } from "./npc-ai.ts";
 import { persistState } from "./persistence.ts";
-// isPixelWalkable import removed: server map dimensions don't match client (see validateAndApplyMove)
+import { isPixelWalkable, CHUNK_TILES_W, CHUNK_TILES_H, TILE_SIZE } from "./map.ts";
 
 // Max distance a player can move per server tick in tile coords
 // Client moves ~1.8px/frame at 60fps, TILE=20px → ~5.4px/frame → ~0.27 tiles/frame
@@ -108,7 +108,7 @@ export async function handleWalkerInteraction(
 // ─── Player validation ───────────────────────────────────────────────────────
 
 function validateAndApplyMove(player: PlayerState, msg: MoveMessage, world: WorldState): void {
-  // Client sends tile coordinates (tx, ty) — validate and clamp by tile distance
+  // Client sends pixel coordinates (x, y) — validate distance and check tile collision
   const dx = msg.x - player.x;
   const dy = msg.y - player.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
@@ -117,7 +117,7 @@ function validateAndApplyMove(player: PlayerState, msg: MoveMessage, world: Worl
   let newY: number;
 
   if (dist > MAX_MOVE_PER_TICK) {
-    // Clamp to max tile speed
+    // Clamp to max speed
     const scale = MAX_MOVE_PER_TICK / dist;
     newX = player.x + dx * scale;
     newY = player.y + dy * scale;
@@ -126,9 +126,48 @@ function validateAndApplyMove(player: PlayerState, msg: MoveMessage, world: Worl
     newY = msg.y;
   }
 
-  // Note: server-side walkability check skipped — server chunk map uses different tile
-  // dimensions (25×19 @ 32px) than the client (50×35 @ 20px). Collision is enforced
-  // client-side until server map is reconciled with client layout.
+  // Server-side tile collision — dimensions match client (50×35 @ 20px)
+  const chunkKey = `${msg.chunkX}:${msg.chunkY}`;
+  const chunk = world.chunks.get(chunkKey);
+  if (chunk) {
+    // Check all four corners of the player hitbox (12×12, centered) — matches client isBlocked
+    const hw = 6, hh = 6;
+    const corners: [number, number][] = [
+      [newX - hw, newY - hh], [newX + hw - 1, newY - hh],
+      [newX - hw, newY + hh - 1], [newX + hw - 1, newY + hh - 1],
+    ];
+    const blocked = corners.some(([cx, cy]) => !isPixelWalkable(cx, cy, chunk));
+
+    if (blocked) {
+      // Try horizontal only
+      const cornersH: [number, number][] = [
+        [newX - hw, player.y - hh], [newX + hw - 1, player.y - hh],
+        [newX - hw, player.y + hh - 1], [newX + hw - 1, player.y + hh - 1],
+      ];
+      const blockedH = cornersH.some(([cx, cy]) => !isPixelWalkable(cx, cy, chunk));
+
+      if (!blockedH) {
+        newX = newX;
+        newY = player.y;
+      } else {
+        // Try vertical only
+        const cornersV: [number, number][] = [
+          [player.x - hw, newY - hh], [player.x + hw - 1, newY - hh],
+          [player.x - hw, newY + hh - 1], [player.x + hw - 1, newY + hh - 1],
+        ];
+        const blockedV = cornersV.some(([cx, cy]) => !isPixelWalkable(cx, cy, chunk));
+
+        if (!blockedV) {
+          newX = player.x;
+          newY = newY;
+        } else {
+          // Fully blocked — reject move, keep current position
+          newX = player.x;
+          newY = player.y;
+        }
+      }
+    }
+  }
 
   player.x = newX;
   player.y = newY;

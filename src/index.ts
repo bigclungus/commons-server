@@ -21,6 +21,32 @@ import {
 import { loadNpcPositions, recordWornPath, persistState, resetNpcPositionsInDb, loadWornPathsForChunk } from "./persistence.ts";
 import { handleWalkerInteraction } from "./game-loop.ts";
 import { resetNpcPositions } from "./npc-ai.ts";
+import {
+  startSpawnSchedule,
+  getWalkersResponse,
+  pauseWalker,
+  resumeWalker,
+  keepWalker,
+  dismissWalker,
+} from "./audition.ts";
+import {
+  createLobby,
+  joinLobby,
+  getInstance,
+  handleDisconnect,
+  handleReconnect,
+  handleMessage as handleDungeonMessage,
+  startRun,
+  setManagerSendFunction,
+} from "./dungeon/dungeon-manager.ts";
+import type { DungeonClientMessage, DungeonServerMessage } from "./dungeon/dungeon-protocol.ts";
+import {
+  startDungeonLoop,
+  stopDungeonLoop,
+  setSendFunction,
+  initFloor,
+  queuePowerActivation,
+} from "./dungeon/dungeon-loop.ts";
 
 // ─── World state initialisation ──────────────────────────────────────────────
 
@@ -73,7 +99,21 @@ interface SocketData {
   chunkX: number;
   chunkY: number;
   lastSeen: number;
+  isDungeon?: false;
 }
+
+interface DungeonSocketData {
+  userId: string;
+  name: string;
+  socketId: string;
+  lobbyId: string;
+  isDungeon: true;
+}
+
+type AnySocketData = SocketData | DungeonSocketData;
+
+// Track dungeon websocket connections for sending messages back
+const dungeonSockets = new Map<string, import("bun").ServerWebSocket<DungeonSocketData>>();
 
 // ─── Congress state polling ───────────────────────────────────────────────────
 
@@ -102,10 +142,10 @@ setInterval(() => {
 
 // ─── Bun server setup ─────────────────────────────────────────────────────────
 
-const bunServer = serve<SocketData>({
+const bunServer = serve<AnySocketData>({
   port: 8090,
 
-  fetch(req, server) {
+  async fetch(req, server) {
     const url = new URL(req.url);
 
     // WebSocket upgrade
@@ -207,12 +247,179 @@ const bunServer = serve<SocketData>({
       }
     }
 
+    // ── Audition REST endpoints ──────────────────────────────────────────────
+    if (url.pathname === "/api/audition/walkers" && req.method === "GET") {
+      return getWalkersResponse(world);
+    }
+
+    if (url.pathname === "/api/audition/pause" && req.method === "POST") {
+      const body = (await req.json()) as { id: string };
+      return pauseWalker(world, body.id);
+    }
+
+    if (url.pathname === "/api/audition/resume" && req.method === "POST") {
+      const body = (await req.json()) as { id: string };
+      return resumeWalker(world, body.id);
+    }
+
+    if (url.pathname === "/api/audition/keep" && req.method === "POST") {
+      const body = (await req.json()) as { id: string };
+      return keepWalker(world, body.id);
+    }
+
+    if (url.pathname === "/api/audition/dismiss" && req.method === "POST") {
+      const body = (await req.json()) as { id: string };
+      return dismissWalker(world, body.id);
+    }
+
+    // ── Clungiverse Dungeon WebSocket upgrade ─────────────────────────────
+    if (url.pathname === "/dungeon-ws") {
+      const userId = url.searchParams.get("userId") ?? "anonymous";
+      const name = url.searchParams.get("name") ?? "unknown";
+      const lobbyId = url.searchParams.get("lobbyId") ?? "";
+      const socketId = `dng-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+      const upgraded = server.upgrade(req, {
+        data: {
+          userId,
+          name,
+          socketId,
+          lobbyId,
+          isDungeon: true,
+        } satisfies DungeonSocketData,
+      });
+      if (upgraded) return undefined;
+      return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
+    // ── Clungiverse REST routes ─────────────────────────────────────────
+    if (url.pathname === "/api/clungiverse/lobby/create" && req.method === "POST") {
+      try {
+        const body = (await req.json()) as { userId: string; name: string };
+        if (!body.userId || !body.name) {
+          return new Response(JSON.stringify({ error: "userId and name required" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const instance = createLobby(body.userId, body.name);
+        return new Response(
+          JSON.stringify({ lobbyId: instance.lobbyId, hostId: body.userId }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // GET /api/clungiverse/lobby/:id
+    const lobbyGetMatch = url.pathname.match(/^\/api\/clungiverse\/lobby\/([^/]+)$/);
+    if (lobbyGetMatch && req.method === "GET") {
+      const lobbyId = lobbyGetMatch[1];
+      const instance = getInstance(lobbyId);
+      if (!instance) {
+        return new Response(JSON.stringify({ error: "Lobby not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const players = Array.from(instance.players.values()).map((p) => ({
+        playerId: p.id,
+        name: p.name,
+        personaSlug: p.personaSlug || null,
+        ready: !!p.personaSlug,
+      }));
+      return new Response(
+        JSON.stringify({
+          lobbyId: instance.lobbyId,
+          status: instance.status,
+          playerCount: instance.players.size,
+          players,
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    // POST /api/clungiverse/lobby/:id/join
+    const lobbyJoinMatch = url.pathname.match(/^\/api\/clungiverse\/lobby\/([^/]+)\/join$/);
+    if (lobbyJoinMatch && req.method === "POST") {
+      try {
+        const lobbyId = lobbyJoinMatch[1];
+        const body = (await req.json()) as { userId: string; name: string };
+        if (!body.userId || !body.name) {
+          return new Response(JSON.stringify({ error: "userId and name required" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const instance = joinLobby(lobbyId, body.userId, body.name);
+        if (!instance) {
+          return new Response(JSON.stringify({ error: "Cannot join lobby (full, not found, or in progress)" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({ lobbyId: instance.lobbyId, joined: true }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
     return new Response("Not found", { status: 404 });
   },
 
   websocket: {
-    open(ws) {
-      const { socketId, chunkX, chunkY, name, color, userId } = ws.data;
+    open(ws: import("bun").ServerWebSocket<AnySocketData>) {
+      // ── Dungeon WebSocket ──
+      if (ws.data.isDungeon) {
+        const dws = ws as import("bun").ServerWebSocket<DungeonSocketData>;
+        const { socketId, userId, name, lobbyId } = dws.data;
+        dungeonSockets.set(socketId, dws);
+
+        // Auto-reconnect if instance exists
+        if (lobbyId) {
+          const instance = handleReconnect(lobbyId, userId, socketId);
+          if (instance) {
+            dws.send(JSON.stringify({
+              type: "d_welcome",
+              playerId: userId,
+              lobbyId: instance.lobbyId,
+            }));
+
+            // Send current lobby state if still in lobby phase
+            if (instance.status === "lobby") {
+              const players = Array.from(instance.players.values()).map((p) => ({
+                playerId: p.id,
+                name: p.name,
+                personaSlug: p.personaSlug || null,
+                ready: !!p.personaSlug,
+              }));
+              const hostId = instance.players.keys().next().value ?? "";
+              dws.send(JSON.stringify({
+                type: "d_lobby",
+                lobbyId: instance.lobbyId,
+                hostId,
+                players,
+                status: "waiting",
+              }));
+            }
+          }
+        }
+        console.log(`[dungeon-ws] ${name} (${userId}) connected — socketId=${socketId}`);
+        return;
+      }
+
+      // ── Commons WebSocket ──
+      const { socketId, chunkX, chunkY, name, color, userId } = ws.data as SocketData;
       ws.subscribe(`chunk:${chunkX}:${chunkY}`);
 
       // Ensure chunk data is loaded
@@ -256,8 +463,53 @@ const bunServer = serve<SocketData>({
       ws.send(JSON.stringify(initialTick));
     },
 
-    message(ws, rawMessage) {
-      const { socketId } = ws.data;
+    message(ws: import("bun").ServerWebSocket<AnySocketData>, rawMessage) {
+      // ── Dungeon WebSocket messages ──
+      if (ws.data.isDungeon) {
+        const dws = ws as import("bun").ServerWebSocket<DungeonSocketData>;
+        const { userId, lobbyId } = dws.data;
+        let msg: DungeonClientMessage;
+        try {
+          msg = JSON.parse(rawMessage.toString()) as DungeonClientMessage;
+        } catch {
+          return;
+        }
+        const sendToPlayer = (targetId: string, serverMsg: DungeonServerMessage) => {
+          for (const [_sid, sock] of dungeonSockets) {
+            if (sock.data.userId === targetId) {
+              sock.send(JSON.stringify(serverMsg));
+              break;
+            }
+          }
+        };
+
+        // Intercept d_start to trigger floor generation after startRun
+        if (msg.type === "d_start") {
+          const inst = getInstance(lobbyId);
+          if (inst && inst.status === "lobby") {
+            const started = startRun(lobbyId);
+            if (started) {
+              initFloor(started);
+            }
+          }
+          return;
+        }
+
+        // Intercept d_power to queue power activation
+        if (msg.type === "d_power") {
+          const inst = getInstance(lobbyId);
+          if (inst && (inst.status === "running" || inst.status === "boss")) {
+            queuePowerActivation(inst.id, userId);
+          }
+          return;
+        }
+
+        handleDungeonMessage(lobbyId, userId, msg, sendToPlayer);
+        return;
+      }
+
+      // ── Commons WebSocket messages ──
+      const { socketId } = ws.data as SocketData;
       const player = world.players.get(socketId);
       if (!player) return;
 
@@ -282,8 +534,20 @@ const bunServer = serve<SocketData>({
       handleClientMessage(socketId, msg, world);
     },
 
-    close(ws) {
-      const { socketId, chunkX, chunkY, name } = ws.data;
+    close(ws: import("bun").ServerWebSocket<AnySocketData>) {
+      // ── Dungeon WebSocket close ──
+      if (ws.data.isDungeon) {
+        const { socketId, userId, lobbyId, name } = ws.data as DungeonSocketData;
+        dungeonSockets.delete(socketId);
+        if (lobbyId) {
+          handleDisconnect(lobbyId, userId);
+        }
+        console.log(`[dungeon-ws] ${name} disconnected (${socketId})`);
+        return;
+      }
+
+      // ── Commons WebSocket close ──
+      const { socketId, chunkX, chunkY, name } = ws.data as SocketData;
       ws.unsubscribe(`chunk:${chunkX}:${chunkY}`);
 
       // Remove from warthog seats if present
@@ -299,6 +563,28 @@ const bunServer = serve<SocketData>({
     idleTimeout: 30,
   },
 });
+
+// ─── Dungeon loop setup ─────────────────────────────────────────────────────
+
+// Wire dungeon send function to route messages through dungeonSockets
+const dungeonSendFn = (playerId: string, msg: DungeonServerMessage) => {
+  for (const [_sid, sock] of dungeonSockets) {
+    if (sock.data.userId === playerId) {
+      try {
+        sock.send(JSON.stringify(msg));
+      } catch (err) {
+        console.error(`[dungeon] Failed to send to ${playerId}:`, err);
+      }
+      break;
+    }
+  }
+};
+setSendFunction(dungeonSendFn);
+setManagerSendFunction(dungeonSendFn);
+
+// Start the 16Hz dungeon tick loop
+startDungeonLoop();
+console.log("[commons-server] Dungeon loop started");
 
 // ─── Chunk subscription callback ─────────────────────────────────────────────
 
@@ -343,6 +629,7 @@ const tickInterval = setInterval(() => {
 process.on("SIGTERM", () => {
   console.log("[commons-server] SIGTERM received — flushing state and shutting down");
   clearInterval(tickInterval);
+  stopDungeonLoop();
   try {
     persistState(world);
   } catch (err) {
@@ -356,5 +643,10 @@ process.on("SIGINT", () => {
   clearInterval(tickInterval);
   process.exit(0);
 });
+
+// ─── Start audition walker spawning ──────────────────────────────────────────
+// Spawning works with ANTHROPIC_API_KEY (direct API) or falls back to claude CLI
+startSpawnSchedule(world);
+console.log("[commons-server] Audition walker spawning enabled");
 
 console.log(`[commons-server] Listening on :8090 — 20Hz tick, ${world.npcs.size} NPCs loaded`);
