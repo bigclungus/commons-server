@@ -66,6 +66,8 @@ export interface DungeonTickMessage {
   projectiles: ProjectileSnapshot[];
   aoeZones: AoEZoneSnapshot[];
   events: TickEvent[];
+  totalMobs: number;
+  remainingMobs: number;
 }
 
 export interface DungeonFloorMessage {
@@ -263,6 +265,7 @@ export interface EnemyInstance {
   def: number;
   spd: number;
   isBoss: boolean;
+  bossSpawned: boolean;
   roomIndex: number;
   targetPlayerId: string | null;
   cooldownTicks: number;

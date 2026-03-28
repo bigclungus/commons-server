@@ -106,6 +106,10 @@ interface InstanceEphemeral {
   transitionChoices: LootItem[] | null; // current powerup choices offered
   transitionPicks: Map<string, number>; // playerId → chosen powerup ID
   transitionTimer: ReturnType<typeof setTimeout> | null;
+  // Mob counting: only pre-placed enemies count toward HUD total
+  originalEnemyCount: number;
+  // Boss room bounds (pixel coords) for activation check
+  bossRoomBounds: { x: number; y: number; w: number; h: number } | null;
 }
 
 const ephemeralMap = new Map<string, InstanceEphemeral>();
@@ -124,6 +128,8 @@ function getEphemeral(instance: DungeonInstance): InstanceEphemeral {
       transitionChoices: null,
       transitionPicks: new Map(),
       transitionTimer: null,
+      originalEnemyCount: 0,
+      bossRoomBounds: null,
     };
     ephemeralMap.set(instance.id, e);
   }
@@ -267,6 +273,7 @@ export function initFloor(instance: DungeonInstance): void {
       def: variant.def,
       spd: variant.spd,
       isBoss: false,
+      bossSpawned: false,
       roomIndex: spawn.roomId,
       targetPlayerId: null,
       cooldownTicks: 0,
@@ -305,6 +312,7 @@ export function initFloor(instance: DungeonInstance): void {
         def: Math.floor(8 * template.enemy_scaling),
         spd: 1.5,
         isBoss: true,
+        bossSpawned: false,
         roomIndex: genLayout.rooms.indexOf(bossRoom),
         targetPlayerId: null,
         cooldownTicks: 0,
@@ -322,6 +330,27 @@ export function initFloor(instance: DungeonInstance): void {
       const protoRoom = layout.rooms[genLayout.rooms.indexOf(bossRoom)];
       if (protoRoom) protoRoom.enemyIds.push(bossId);
     }
+  }
+
+  // Track original (pre-placed) enemy count for HUD — excludes the boss itself
+  // Count only non-boss enemies; the boss doesn't count toward "mobs remaining"
+  let preplacedCount = 0;
+  for (const [, e] of instance.enemies) {
+    if (!e.isBoss && !e.bossSpawned) preplacedCount++;
+  }
+  eph.originalEnemyCount = preplacedCount;
+
+  // Store boss room bounds in pixel coords for activation check
+  const bossRoomGen = genLayout.rooms.find((r) => r.type === "boss");
+  if (bossRoomGen) {
+    eph.bossRoomBounds = {
+      x: bossRoomGen.x * TILE_SIZE,
+      y: bossRoomGen.y * TILE_SIZE,
+      w: bossRoomGen.w * TILE_SIZE,
+      h: bossRoomGen.h * TILE_SIZE,
+    };
+  } else {
+    eph.bossRoomBounds = null;
   }
 
   // Position players at spawn point (center of start room)
@@ -634,9 +663,34 @@ function tickInstance(instance: DungeonInstance): void {
   }
 
   // === 6. Update boss AI ===
+  // Only activate boss AI when at least one player is inside the boss room
   if (eph.bossId && eph.bossAIState) {
     const boss = instance.enemies.get(eph.bossId);
     if (boss && boss.hp > 0) {
+      // Check if any alive player is within the boss room bounds
+      let playerInBossRoom = false;
+      if (eph.bossRoomBounds) {
+        const br = eph.bossRoomBounds;
+        for (const [, player] of instance.players) {
+          if (player.hp <= 0) continue;
+          if (
+            player.x >= br.x &&
+            player.x <= br.x + br.w &&
+            player.y >= br.y &&
+            player.y <= br.y + br.h
+          ) {
+            playerInBossRoom = true;
+            break;
+          }
+        }
+      } else {
+        // No boss room bounds means we can't check — default to active
+        playerInBossRoom = true;
+      }
+
+      if (!playerInBossRoom) {
+        // Boss stays idle; skip AI entirely
+      } else {
       instance.status = "boss"; // ensure status reflects boss fight
 
       const bossEntity = toEnemyEntity(boss, tick);
@@ -678,6 +732,7 @@ function tickInstance(instance: DungeonInstance): void {
                 def: 2,
                 spd: 1.5,
                 isBoss: false,
+                bossSpawned: true,
                 roomIndex: boss.roomIndex,
                 targetPlayerId: null,
                 cooldownTicks: 0,
@@ -751,6 +806,7 @@ function tickInstance(instance: DungeonInstance): void {
         });
       }
       boss.phase = eph.bossAIState.phase;
+      } // end playerInBossRoom else
     }
   }
 
@@ -1081,6 +1137,12 @@ function tickInstance(instance: DungeonInstance): void {
   }
 
   // === 16. Build and broadcast tick snapshot ===
+  // Count remaining pre-placed (non-boss-spawned, non-boss) enemies
+  let remainingMobs = 0;
+  for (const [, e] of instance.enemies) {
+    if (e.hp > 0 && !e.isBoss && !e.bossSpawned) remainingMobs++;
+  }
+
   const tickMsg: DungeonTickMessage = {
     type: "d_tick",
     tick,
@@ -1090,6 +1152,8 @@ function tickInstance(instance: DungeonInstance): void {
     projectiles: buildProjectileSnapshots(instance),
     aoeZones: buildAoEZoneSnapshots(instance),
     events,
+    totalMobs: eph.originalEnemyCount,
+    remainingMobs,
   };
   broadcastToInstance(instance, tickMsg);
 }
