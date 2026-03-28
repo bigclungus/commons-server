@@ -46,7 +46,10 @@ import {
   setSendFunction,
   initFloor,
   queuePowerActivation,
+  handlePowerupPick,
 } from "./dungeon/dungeon-loop.ts";
+import { initLootSystem } from "./dungeon/loot.ts";
+import { db } from "./persistence.ts";
 
 // ─── World state initialisation ──────────────────────────────────────────────
 
@@ -484,9 +487,15 @@ const bunServer = serve<AnySocketData>({
         };
 
         // Intercept d_start to trigger floor generation after startRun
+        // Only the host (first player in the lobby) can start
         if (msg.type === "d_start") {
           const inst = getInstance(lobbyId);
           if (inst && inst.status === "lobby") {
+            const hostId = inst.players.keys().next().value ?? "";
+            if (userId !== hostId) {
+              console.warn(`[dungeon-ws] Non-host ${userId} tried to start lobby ${lobbyId}`);
+              return;
+            }
             const started = startRun(lobbyId);
             if (started) {
               initFloor(started);
@@ -500,6 +509,15 @@ const bunServer = serve<AnySocketData>({
           const inst = getInstance(lobbyId);
           if (inst && (inst.status === "running" || inst.status === "boss")) {
             queuePowerActivation(inst.id, userId);
+          }
+          return;
+        }
+
+        // Intercept d_pick_powerup to handle powerup selection between floors
+        if (msg.type === "d_pick_powerup") {
+          const inst = getInstance(lobbyId);
+          if (inst && inst.status === "between_floors") {
+            handlePowerupPick(inst.id, userId, msg.powerupId);
           }
           return;
         }
@@ -563,6 +581,10 @@ const bunServer = serve<AnySocketData>({
     idleTimeout: 30,
   },
 });
+
+// ─── Loot system init ──────────────────────────────────────────────────────
+
+initLootSystem(db);
 
 // ─── Dungeon loop setup ─────────────────────────────────────────────────────
 

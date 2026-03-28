@@ -14,6 +14,11 @@ export interface DamageResult {
   attackerId: string;
 }
 
+export interface HealEvent {
+  targetId: string;
+  amount: number;
+}
+
 export interface PowerResult {
   activated: boolean;
   powerName: string;
@@ -25,6 +30,8 @@ export interface PowerResult {
   healed?: number;
   /** ATK bonus gained (Broseidon stacks). */
   atkBonus?: number;
+  /** Per-target heal events (Deckard Cain healing aura). */
+  healEvents?: HealEvent[];
 }
 
 export type PersonaPower = "holden" | "broseidon" | "deckard_cain" | "galactus";
@@ -70,7 +77,7 @@ export interface AoEZone {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const AUTO_ATTACK_RANGE = 28;
+const AUTO_ATTACK_RANGE = 44;
 const I_FRAME_TICKS = 8; // 8 ticks at 16Hz = 500ms
 
 // Power constants
@@ -83,9 +90,9 @@ const BROSEIDON_WINDOW_TICKS = 160; // 10s
 const BROSEIDON_ATK_PER_KILL = 2;
 const BROSEIDON_COOLDOWN_TICKS = 160; // 10s
 
-const DECKARD_RADIUS = 48;
-const DECKARD_DURATION_TICKS = 64; // 4s
-const DECKARD_SLOW = 0.6; // 40% slow = 0.6x speed
+const DECKARD_HEAL_RADIUS = 80;
+const DECKARD_HEAL_MIN = 0.25; // 25% maxHP
+const DECKARD_HEAL_MAX = 0.30; // 30% maxHP
 const DECKARD_COOLDOWN_TICKS = 192; // 12s
 
 const GALACTUS_RANGE = 36;
@@ -161,6 +168,7 @@ export function resolvePower(
   enemies: EnemyEntity[],
   aoeZones: AoEZone[],
   tick: number,
+  allPlayers?: PlayerEntity[],
 ): PowerResult | null {
   if (player.powerCooldownUntilTick > tick) return null;
   if (!player.alive) return null;
@@ -171,7 +179,7 @@ export function resolvePower(
     case "broseidon":
       return resolveBroseidon(player, tick);
     case "deckard_cain":
-      return resolveDeckard(player, aoeZones, tick);
+      return resolveDeckard(player, allPlayers ?? [player], tick);
     case "galactus":
       return resolveGalactus(player, enemies, tick);
   }
@@ -214,31 +222,35 @@ function resolveBroseidon(
   };
 }
 
-/** Deckard Cain — Stay Awhile and Listen: AoE slow zone. */
+/** Deckard Cain — Healing Aura: AoE heal for self and allies within 80px. */
 function resolveDeckard(
   player: PlayerEntity,
-  aoeZones: AoEZone[],
+  allPlayers: PlayerEntity[],
   tick: number,
 ): PowerResult {
-  const zoneId = `zone_${player.id}_${tick}`;
-  const zone: AoEZone = {
-    id: zoneId,
-    x: player.x,
-    y: player.y,
-    radius: DECKARD_RADIUS,
-    expiresAtTick: tick + DECKARD_DURATION_TICKS,
-    owner: player.id,
-    type: "deckard_slow",
-    slowFactor: DECKARD_SLOW,
-  };
-  aoeZones.push(zone);
+  const affected: string[] = [];
+  const healEvents: HealEvent[] = [];
+
+  for (const p of allPlayers) {
+    if (!p.alive) continue;
+    const dx = player.x - p.x;
+    const dy = player.y - p.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > DECKARD_HEAL_RADIUS && p.id !== player.id) continue;
+
+    const fraction = DECKARD_HEAL_MIN + Math.random() * (DECKARD_HEAL_MAX - DECKARD_HEAL_MIN);
+    const healAmount = Math.floor(p.maxHP * fraction);
+    p.hp = Math.min(p.maxHP, p.hp + healAmount);
+    affected.push(p.id);
+    healEvents.push({ targetId: p.id, amount: healAmount });
+  }
 
   player.powerCooldownUntilTick = tick + DECKARD_COOLDOWN_TICKS;
   return {
     activated: true,
-    powerName: "stay_awhile",
-    affected: [],
-    spawnedZone: zone,
+    powerName: "healing_aura",
+    affected,
+    healEvents,
   };
 }
 

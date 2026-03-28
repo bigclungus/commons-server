@@ -50,8 +50,8 @@ export function calculateEffectiveStats(
   effective.SPD = Math.max(0.5, effective.SPD);
   effective.LCK = Math.max(0, effective.LCK);
 
-  // Auto-attack rate: 600 / (1 + SPD * 0.05) ms
-  const autoAttackIntervalMs = 600 / (1 + effective.SPD * 0.05);
+  // Auto-attack rate: 6 / (1 + SPD * 0.05) ms — 100x faster than original 600
+  const autoAttackIntervalMs = 6 / (1 + effective.SPD * 0.05);
 
   // Crit chance: LCK * 0.02, capped at 0.8
   const critChance = Math.min(0.8, effective.LCK * 0.02);

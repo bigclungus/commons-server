@@ -30,6 +30,8 @@ export interface ProjectileSpawn {
 
 export interface EnemyAIState {
   behavior: EnemyBehavior;
+  /** Whether this enemy has aggro'd on a player. */
+  aggrod: boolean;
   /** Brute: tick when telegraph started. 0 = not telegraphing. */
   telegraphStartTick: number;
   /** Brute: tick when charge started. 0 = not charging. */
@@ -52,6 +54,9 @@ interface PlayerTarget {
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
+
+const AGGRO_RADIUS = 128;   // px — enemies engage when player is this close
+const DEAGGRO_RADIUS = 192; // px — enemies disengage when player leaves this range
 
 const BRUTE_TELEGRAPH_TICKS = 16; // 1s at 16Hz
 const BRUTE_CHARGE_DISTANCE = 48;
@@ -93,6 +98,19 @@ export function updateEnemyAI(
   // Find nearest alive player
   const target = findNearestPlayer(enemy, players);
   if (!target) return idle;
+
+  // Aggro radius check: enemies idle until a player comes within range
+  const dx0 = target.x - enemy.x;
+  const dy0 = target.y - enemy.y;
+  const distToTarget = Math.sqrt(dx0 * dx0 + dy0 * dy0);
+
+  if (!aiState.aggrod) {
+    if (distToTarget > AGGRO_RADIUS) return idle;
+    aiState.aggrod = true;
+  } else if (distToTarget > DEAGGRO_RADIUS) {
+    aiState.aggrod = false;
+    return idle;
+  }
 
   // Apply slow multiplier to effective speed
   const effectiveSpeed = enemy.stats.SPD * enemy.slowMultiplier;
@@ -308,6 +326,7 @@ function findNearestPlayer(
 export function createEnemyAIState(behavior: EnemyBehavior): EnemyAIState {
   return {
     behavior,
+    aggrod: false,
     telegraphStartTick: 0,
     chargeStartTick: 0,
     chargeDx: 0,

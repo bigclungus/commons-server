@@ -34,7 +34,6 @@ import {
 } from "./dungeon-generation.ts";
 
 import {
-  resolveAutoAttack,
   resolvePower,
   applyDamage,
   processKill,
@@ -43,6 +42,7 @@ import {
   type PlayerEntity,
   type EnemyEntity,
   type AoEZone,
+  type HealEvent,
   type CombatEntity,
 } from "./combat.ts";
 
@@ -62,7 +62,6 @@ import {
 } from "./boss-ai.ts";
 
 import {
-  wallSlide,
   circleVsCircle,
 } from "./collision.ts";
 
@@ -73,14 +72,25 @@ import {
 
 import { TILE } from "./dungeon-protocol.ts";
 
+import {
+  lootRegistry,
+  initLootSystem,
+  type LootItem,
+} from "./loot.ts";
+
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const TICK_MS = 62.5; // 16Hz
 const TILE_SIZE = 16;
 const PLAYER_RADIUS = 10;
 const DISCONNECT_TIMEOUT_MS = 60_000;
-const AUTO_ATTACK_INTERVAL_TICKS = 10; // ~625ms default, overridden by stats
+const AUTO_ATTACK_INTERVAL_TICKS = 1; // every tick (~62.5ms) — maximum fire rate
+const PLAYER_PROJECTILE_SPEED = 300 / (1000 / TICK_MS); // 300px/s → px/tick
+const PLAYER_PROJECTILE_RADIUS = 4;
+const PLAYER_PROJECTILE_LIFETIME_TICKS = Math.ceil(1500 / TICK_MS); // 1.5s
+const PLAYER_AUTO_ATTACK_RANGE = 120; // px — detection range for spawning projectiles
 const TOTAL_FLOORS = 3;
+const POWERUP_PICK_TIMEOUT_MS = 15_000; // 15s to pick a powerup between floors
 
 // ─── Per-instance ephemeral state ────────────────────────────────────────────
 
@@ -92,6 +102,10 @@ interface InstanceEphemeral {
   pendingAttacks: Set<string>; // playerIds that requested an attack this tick
   pendingPowers: Set<string>; // playerIds that activated power this tick
   genLayout: GenFloorLayout | null;
+  // Powerup transition state
+  transitionChoices: LootItem[] | null; // current powerup choices offered
+  transitionPicks: Map<string, number>; // playerId → chosen powerup ID
+  transitionTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const ephemeralMap = new Map<string, InstanceEphemeral>();
@@ -107,6 +121,9 @@ function getEphemeral(instance: DungeonInstance): InstanceEphemeral {
       pendingAttacks: new Set(),
       pendingPowers: new Set(),
       genLayout: null,
+      transitionChoices: null,
+      transitionPicks: new Map(),
+      transitionTimer: null,
     };
     ephemeralMap.set(instance.id, e);
   }
@@ -114,6 +131,10 @@ function getEphemeral(instance: DungeonInstance): InstanceEphemeral {
 }
 
 function cleanupEphemeral(instanceId: string): void {
+  const eph = ephemeralMap.get(instanceId);
+  if (eph?.transitionTimer) {
+    clearTimeout(eph.transitionTimer);
+  }
   ephemeralMap.delete(instanceId);
 }
 
@@ -167,9 +188,9 @@ const DEFAULT_ENEMY_VARIANTS: EnemyVariant[] = [
 ];
 
 const DEFAULT_FLOOR_TEMPLATES: FloorTemplate[] = [
-  { floor_number: 1, room_count_min: 5, room_count_max: 7, enemy_budget: 30, boss_type_id: 1, powerup_choices: 3, enemy_scaling: 1.0 },
-  { floor_number: 2, room_count_min: 6, room_count_max: 9, enemy_budget: 50, boss_type_id: 2, powerup_choices: 3, enemy_scaling: 1.4 },
-  { floor_number: 3, room_count_min: 7, room_count_max: 10, enemy_budget: 70, boss_type_id: 3, powerup_choices: 2, enemy_scaling: 1.8 },
+  { floor_number: 1, room_count_min: 5, room_count_max: 7, enemy_budget: 600, boss_type_id: 1, powerup_choices: 3, enemy_scaling: 1.0 },
+  { floor_number: 2, room_count_min: 6, room_count_max: 9, enemy_budget: 1000, boss_type_id: 2, powerup_choices: 3, enemy_scaling: 1.4 },
+  { floor_number: 3, room_count_min: 7, room_count_max: 10, enemy_budget: 1400, boss_type_id: 3, powerup_choices: 2, enemy_scaling: 1.8 },
 ];
 
 const BOSS_TYPE_MAP: Record<number, BossType> = {
@@ -303,13 +324,16 @@ export function initFloor(instance: DungeonInstance): void {
     }
   }
 
-  // Position players at spawn point
+  // Position players at spawn point (center of start room)
   const startRoom = genLayout.rooms.find((r) => r.type === "start");
   if (startRoom) {
     const cx = (startRoom.x + Math.floor(startRoom.w / 2)) * TILE_SIZE + TILE_SIZE / 2;
     const cy = (startRoom.y + Math.floor(startRoom.h / 2)) * TILE_SIZE + TILE_SIZE / 2;
     let offset = 0;
     for (const [_id, player] of instance.players) {
+      // Clear stale movement inputs from previous floor so they don't
+      // overwrite the new spawn position on the next tick
+      player.inputQueue.length = 0;
       player.x = cx + (offset % 2 === 0 ? offset * 8 : -offset * 8);
       player.y = cy + (offset < 2 ? -8 : 8);
       offset++;
@@ -345,6 +369,27 @@ export function initFloor(instance: DungeonInstance): void {
       x1: c.x1, y1: c.y1, x2: c.x2, y2: c.y2, width: c.width,
     })),
   };
+  // Open doors for all non-boss rooms immediately (fog of war + aggro radius replace doors)
+  // Boss room doors stay locked until all other rooms are cleared.
+  // Must happen BEFORE broadcasting d_floor so the client gets the correct tile states.
+  const bossRoomIndex = genLayout.rooms.findIndex((r) => r.type === "boss");
+  for (let i = 0; i < layout.rooms.length; i++) {
+    if (i === bossRoomIndex) continue; // keep boss room doors closed
+    layout.rooms[i].cleared = true;
+    openDoorsForRoom(layout, i);
+  }
+
+  // Check if boss room doors should also open (all non-boss rooms cleared)
+  if (bossRoomIndex >= 0) {
+    const allNonBossCleared = layout.rooms.every((r, idx) => idx === bossRoomIndex || r.cleared);
+    if (allNonBossCleared) {
+      layout.rooms[bossRoomIndex].cleared = true;
+      openDoorsForRoom(layout, bossRoomIndex);
+    }
+  }
+
+  // Update the floor message tiles after opening doors
+  floorMsg.tiles = Array.from(layout.tiles);
   broadcastToInstance(instance, floorMsg);
 
   console.log(`[dungeon-loop] Floor ${floorNum} initialized for ${instance.id}: ${genLayout.rooms.length} rooms, ${instance.enemies.size} enemies`);
@@ -443,17 +488,11 @@ function tickInstance(instance: DungeonInstance): void {
   for (const [_pid, player] of instance.players) {
     if (player.hp <= 0 || !player.connected) continue;
 
+    // Client-authoritative movement: trust the client's reported position
     while (player.inputQueue.length > 0) {
       const input = player.inputQueue.shift()!;
-      const speed = player.spd;
-      const dx = input.dx * speed;
-      const dy = input.dy * speed;
-      const result = wallSlide(
-        player.x, player.y, dx, dy, PLAYER_RADIUS,
-        layout.tiles, layout.width, layout.height, TILE_SIZE,
-      );
-      player.x = result.x;
-      player.y = result.y;
+      player.x = input.x;
+      player.y = input.y;
       player.facing = input.facing;
       player.lastProcessedSeq = input.seq;
     }
@@ -704,6 +743,13 @@ function tickInstance(instance: DungeonInstance): void {
           break;
       }
 
+      // Emit boss_phase event when phase changes
+      if (boss.phase !== eph.bossAIState.phase) {
+        events.push({
+          type: "boss_phase",
+          payload: { bossId: boss.id, oldPhase: boss.phase, newPhase: eph.bossAIState.phase },
+        });
+      }
       boss.phase = eph.bossAIState.phase;
     }
   }
@@ -761,16 +807,26 @@ function tickInstance(instance: DungeonInstance): void {
         }
       }
     } else {
-      // Player projectile → hit enemies (not used currently but safe to have)
+      // Player projectile → hit enemies
       for (const [eid, enemy] of instance.enemies) {
         if (enemy.hp <= 0) continue;
         const eRadius = enemy.isBoss ? 20 : 8;
         if (circleVsCircle(proj.x, proj.y, proj.radius, enemy.x, enemy.y, eRadius)) {
           enemy.hp -= proj.damage;
+          const killer = instance.players.get(proj.ownerId);
+          if (killer) killer.damageDealt += proj.damage;
+          events.push({
+            type: "damage",
+            payload: {
+              targetId: eid,
+              damage: proj.damage,
+              attackerId: proj.ownerId,
+              isCrit: false,
+            },
+          });
           if (enemy.hp <= 0) {
             enemy.hp = 0;
             events.push({ type: "kill", payload: { enemyId: eid, killerId: proj.ownerId } });
-            const killer = instance.players.get(proj.ownerId);
             if (killer) killer.kills++;
           }
           projectilesToRemove.push(pid);
@@ -804,57 +860,80 @@ function tickInstance(instance: DungeonInstance): void {
     }
   }
 
-  // === 9. Resolve auto-attacks for players ===
+  // === 9. Resolve auto-attacks for players (bullet-hell projectiles) ===
   for (const [pid, player] of instance.players) {
     if (player.hp <= 0 || player.diedOnFloor !== null) continue;
 
-    // Check auto-attack timer
+    // Check auto-attack timer (rapid fire: every 3 ticks ~187ms)
     const nextAttackTick = eph.autoAttackTimers.get(pid) ?? 0;
     if (tick < nextAttackTick) continue;
 
-    // Auto-attack nearest enemy in range
+    // Find nearest alive enemy within detection range
     const pe = toPlayerEntity(player, tick);
-    const targets = enemyEntities.filter((e) => e.alive);
-    const result = resolveAutoAttack(pe, targets, tick);
-    if (result && result.hit) {
-      const enemy = instance.enemies.get(result.targetId);
-      if (enemy) {
-        enemy.hp -= result.damage;
-        player.damageDealt += result.damage;
-        events.push({
-          type: "damage",
-          payload: {
-            targetId: result.targetId,
-            damage: result.damage,
-            attackerId: pid,
-            isCrit: result.isCrit,
-          },
-        });
-
-        if (enemy.hp <= 0) {
-          enemy.hp = 0;
-          player.kills++;
-          events.push({ type: "kill", payload: { enemyId: enemy.id, killerId: pid } });
-        }
-
-        // Set next auto-attack timer
-        const intervalTicks = Math.ceil(pe.stats.autoAttackIntervalMs / TICK_MS);
-        eph.autoAttackTimers.set(pid, tick + intervalTicks);
+    let bestDist = Infinity;
+    let bestTarget: EnemyEntity | null = null;
+    for (const ee of enemyEntities) {
+      if (!ee.alive) continue;
+      const dx = player.x - ee.x;
+      const dy = player.y - ee.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist <= PLAYER_AUTO_ATTACK_RANGE && dist < bestDist) {
+        bestDist = dist;
+        bestTarget = ee;
       }
+    }
+
+    if (bestTarget) {
+      // Calculate damage now and bake it into the projectile
+      const variance = 1 + (Math.random() * 0.2 - 0.1);
+      const rawDamage = pe.stats.ATK * variance;
+      const mitigation = bestTarget.stats.DEF * 0.5;
+      let finalDamage = Math.max(1, Math.floor(rawDamage - mitigation));
+      const isCrit = Math.random() < pe.stats.critChance;
+      if (isCrit) finalDamage = Math.floor(finalDamage * 1.5);
+
+      // Aim at the target
+      const dx = bestTarget.x - player.x;
+      const dy = bestTarget.y - player.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const vx = (dx / dist) * PLAYER_PROJECTILE_SPEED;
+      const vy = (dy / dist) * PLAYER_PROJECTILE_SPEED;
+
+      spawnProjectile(instance, {
+        x: player.x,
+        y: player.y,
+        vx,
+        vy,
+        damage: finalDamage,
+        radius: PLAYER_PROJECTILE_RADIUS,
+        lifetimeTicks: PLAYER_PROJECTILE_LIFETIME_TICKS,
+      }, pid, false);
+
+      // Set next auto-attack timer (rapid fire)
+      eph.autoAttackTimers.set(pid, tick + AUTO_ATTACK_INTERVAL_TICKS);
     }
   }
 
   // === 10. Process power activations ===
+  // Build allPlayers combat entities for powers that need them (Deckard heal)
+  const allPlayerEntities: PlayerEntity[] = [];
+  for (const [, p] of instance.players) {
+    if (p.hp > 0 && p.diedOnFloor === null) {
+      allPlayerEntities.push(toPlayerEntity(p, tick));
+    }
+  }
+
   for (const pid of eph.pendingPowers) {
     const player = instance.players.get(pid);
     if (!player || player.hp <= 0) continue;
     if (player.cooldownTicks > 0) continue;
 
-    const pe = toPlayerEntity(player, tick);
+    const pe = allPlayerEntities.find((p) => p.id === pid);
+    if (!pe) continue;
     const targets = enemyEntities.filter((e) => e.alive);
     const combatZones: AoEZone[] = [];
 
-    const powerResult = resolvePower(pe, targets, combatZones, tick);
+    const powerResult = resolvePower(pe, targets, combatZones, tick, allPlayerEntities);
     if (powerResult && powerResult.activated) {
       // Sync cooldown back
       player.cooldownTicks = Math.max(0, pe.powerCooldownUntilTick - tick);
@@ -902,6 +981,24 @@ function tickInstance(instance: DungeonInstance): void {
       if (powerResult.healed) {
         player.hp = Math.min(player.maxHp, player.hp + powerResult.healed);
       }
+
+      // Heal events (Deckard Cain healing aura) — sync HP back to DungeonPlayer
+      if (powerResult.healEvents) {
+        for (const he of powerResult.healEvents) {
+          const healTarget = instance.players.get(he.targetId);
+          if (healTarget) {
+            // Find the combat entity to get the updated HP
+            const ce = allPlayerEntities.find((p) => p.id === he.targetId);
+            if (ce) {
+              healTarget.hp = ce.hp;
+            }
+          }
+          events.push({
+            type: "heal",
+            payload: { targetId: he.targetId, amount: he.amount, healerId: pid },
+          });
+        }
+      }
     }
   }
   eph.pendingPowers.clear();
@@ -912,17 +1009,13 @@ function tickInstance(instance: DungeonInstance): void {
     if (player.cooldownTicks > 0) player.cooldownTicks--;
   }
 
-  // === 12. Check room clear conditions ===
+  // === 12. Check room clear conditions (only boss room doors remain locked) ===
   if (layout.rooms) {
     for (let i = 0; i < layout.rooms.length; i++) {
       const room = layout.rooms[i];
       if (room.cleared) continue;
-      if (room.enemyIds.length === 0) {
-        room.cleared = true;
-        continue;
-      }
 
-      const allDead = room.enemyIds.every((eid) => {
+      const allDead = room.enemyIds.length === 0 || room.enemyIds.every((eid) => {
         const enemy = instance.enemies.get(eid);
         return !enemy || enemy.hp <= 0;
       });
@@ -930,8 +1023,6 @@ function tickInstance(instance: DungeonInstance): void {
       if (allDead) {
         room.cleared = true;
         events.push({ type: "door_open", payload: { roomIndex: i } });
-
-        // Open doors in the tile grid for this room
         openDoorsForRoom(layout, i);
       }
     }
@@ -954,10 +1045,9 @@ function tickInstance(instance: DungeonInstance): void {
         return;
       }
 
-      // Advance to next floor
-      instance.floor++;
-      instance.status = "running";
-      initFloor(instance);
+      // Enter powerup selection phase
+      instance.status = "between_floors";
+      startPowerupTransition(instance, eph);
       return;
     }
   }
@@ -1002,6 +1092,137 @@ function tickInstance(instance: DungeonInstance): void {
     events,
   };
   broadcastToInstance(instance, tickMsg);
+}
+
+// ─── Powerup transition ─────────────────────────────────────────────────────
+
+function startPowerupTransition(instance: DungeonInstance, eph: InstanceEphemeral): void {
+  // Generate 3 choices from registry
+  const choices = lootRegistry.generateChoices(3, instance.floor);
+  eph.transitionChoices = choices;
+  eph.transitionPicks = new Map();
+
+  // Broadcast choices to all players
+  const choicesMsg = {
+    type: "d_powerup_choices" as const,
+    choices: choices.map((c) => ({
+      id: c.id,
+      slug: c.slug,
+      name: c.name,
+      description: c.description,
+      rarity: c.rarity,
+      statModifier: c.statModifier,
+    })),
+  };
+  broadcastToInstance(instance, choicesMsg);
+
+  console.log(`[dungeon-loop] Powerup transition for ${instance.id} floor ${instance.floor}: ${choices.map((c) => c.name).join(", ")}`);
+
+  // Start timeout — after 15s, assign random picks to anyone who hasn't chosen
+  eph.transitionTimer = setTimeout(() => {
+    finalizePowerupTransition(instance);
+  }, POWERUP_PICK_TIMEOUT_MS);
+}
+
+/**
+ * Handle a player's powerup pick. Called from index.ts message handler.
+ */
+export function handlePowerupPick(instanceId: string, playerId: string, powerupId: number): void {
+  // Find instance by iterating the manager's map
+  const instancesMap = getAllInstances();
+  let instance: DungeonInstance | null = null;
+  for (const [_lobbyId, inst] of instancesMap) {
+    if (inst.id === instanceId) {
+      instance = inst;
+      break;
+    }
+  }
+  if (!instance || instance.status !== "between_floors") return;
+
+  const eph = getEphemeral(instance);
+  if (!eph.transitionChoices) return;
+
+  // Validate the pick is one of the offered choices
+  const validChoice = eph.transitionChoices.find((c) => c.id === powerupId);
+  if (!validChoice) return;
+
+  eph.transitionPicks.set(playerId, powerupId);
+
+  // Check if all alive players have picked
+  const alivePlayers = Array.from(instance.players.values()).filter(
+    (p) => p.hp > 0 && p.diedOnFloor === null
+  );
+  const allPicked = alivePlayers.every((p) => eph.transitionPicks.has(p.id));
+
+  if (allPicked) {
+    // Cancel timer, finalize immediately
+    if (eph.transitionTimer) {
+      clearTimeout(eph.transitionTimer);
+      eph.transitionTimer = null;
+    }
+    finalizePowerupTransition(instance);
+  }
+}
+
+function finalizePowerupTransition(instance: DungeonInstance): void {
+  const eph = getEphemeral(instance);
+  if (!eph.transitionChoices || eph.transitionChoices.length === 0) {
+    // No choices available — just advance
+    advanceFloor(instance, eph);
+    return;
+  }
+
+  const alivePlayers = Array.from(instance.players.values()).filter(
+    (p) => p.hp > 0 && p.diedOnFloor === null
+  );
+
+  // Assign random picks for players who didn't choose
+  for (const player of alivePlayers) {
+    if (!eph.transitionPicks.has(player.id)) {
+      const randomChoice = eph.transitionChoices[Math.floor(Math.random() * eph.transitionChoices.length)];
+      eph.transitionPicks.set(player.id, randomChoice.id);
+    }
+  }
+
+  // Apply powerups to players
+  for (const player of alivePlayers) {
+    const chosenId = eph.transitionPicks.get(player.id);
+    if (chosenId === undefined) continue;
+
+    const lootItem = eph.transitionChoices.find((c) => c.id === chosenId);
+    if (!lootItem) continue;
+
+    // Track the powerup ID on the player
+    player.powerups.push(lootItem.id);
+
+    // Apply stat modifiers directly
+    const mods = lootItem.statModifier;
+    if (mods.hp) {
+      player.maxHp += mods.hp;
+      player.hp = Math.min(player.hp + Math.max(0, mods.hp), player.maxHp);
+      player.maxHp = Math.max(1, player.maxHp);
+      player.hp = Math.max(1, Math.min(player.hp, player.maxHp));
+    }
+    if (mods.atk) player.atk = Math.max(0, player.atk + mods.atk);
+    if (mods.def) player.def = Math.max(0, player.def + mods.def);
+    if (mods.spd) player.spd = Math.max(0.5, player.spd + mods.spd);
+    if (mods.lck) player.lck = Math.max(0, player.lck + mods.lck);
+
+    console.log(`[dungeon-loop] Player ${player.name} picked ${lootItem.name} (${lootItem.rarity})`);
+  }
+
+  // Clear transition state
+  eph.transitionChoices = null;
+  eph.transitionPicks.clear();
+  eph.transitionTimer = null;
+
+  advanceFloor(instance, eph);
+}
+
+function advanceFloor(instance: DungeonInstance, _eph: InstanceEphemeral): void {
+  instance.floor++;
+  instance.status = "running";
+  initFloor(instance);
 }
 
 // ─── Projectile spawning ─────────────────────────────────────────────────────
@@ -1097,6 +1318,7 @@ function buildProjectileSnapshots(instance: DungeonInstance): ProjectileSnapshot
       y: p.y,
       radius: p.radius,
       fromEnemy: p.fromEnemy,
+      ownerId: p.ownerId,
     });
   }
   return snaps;

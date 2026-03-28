@@ -20,8 +20,8 @@ export type TileType = (typeof TILE)[keyof typeof TILE];
 export interface DungeonMoveMessage {
   type: "d_move";
   seq: number;
-  dx: number;
-  dy: number;
+  x: number;
+  y: number;
   facing: "left" | "right";
 }
 
@@ -146,6 +146,7 @@ export interface ProjectileSnapshot {
   y: number;
   radius: number;
   fromEnemy: boolean;
+  ownerId: string;
 }
 
 export interface AoEZoneSnapshot {

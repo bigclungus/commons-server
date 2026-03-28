@@ -272,7 +272,7 @@ export function handleMessage(
       break;
 
     case "d_move":
-      if (instance.status === "running") {
+      if (instance.status === "running" || instance.status === "boss") {
         player.inputQueue.push(msg);
       }
       break;

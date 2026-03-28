@@ -133,8 +133,8 @@ interface BSPNode {
   room: Room | null;
 }
 
-const MIN_LEAF_SIZE = 8;
-const MIN_ROOM_SIZE = 5;
+const MIN_LEAF_SIZE = 30;
+const MIN_ROOM_SIZE = 25;
 
 function splitBSP(node: BSPNode, depth: number, maxDepth: number, rng: SeededRNG): void {
   if (depth >= maxDepth) return;
@@ -307,7 +307,7 @@ function buildTileGrid(
   const grid = new Uint8Array(width * height);
   grid.fill(Tile.WALL);
 
-  const CORRIDOR_HALF_WIDTH = 1; // 3-wide corridor (center +/- 1)
+  const CORRIDOR_HALF_WIDTH = 2; // 5-wide corridor (center +/- 2)
 
   const set = (x: number, y: number, tile: TileType) => {
     if (x >= 0 && x < width && y >= 0 && y < height) {
@@ -504,17 +504,17 @@ function spawnEnemies(
 // ─── Floor Size ──────────────────────────────────────────────────────────────
 
 function floorDimensions(floorNumber: number): { width: number; height: number } {
-  // F1: 80x60, scales up slightly per floor
+  // F1: 200x150, scales up slightly per floor
   const scale = 1 + (floorNumber - 1) * 0.15;
   return {
-    width: Math.floor(80 * scale),
-    height: Math.floor(60 * scale),
+    width: Math.floor(200 * scale),
+    height: Math.floor(150 * scale),
   };
 }
 
 function splitDepth(floorNumber: number): number {
-  // 4 for F1, up to 6 for higher floors
-  return Math.min(4 + Math.floor((floorNumber - 1) / 2), 6);
+  // 5 for F1, up to 7 for higher floors (deeper splits for larger maps)
+  return Math.min(5 + Math.floor((floorNumber - 1) / 2), 7);
 }
 
 // ─── Main Entry Point ────────────────────────────────────────────────────────
