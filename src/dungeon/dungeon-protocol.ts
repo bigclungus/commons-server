@@ -107,13 +107,28 @@ export interface DungeonWelcomeMessage {
   lobbyId: string;
 }
 
+export interface DungeonMobProgressMessage {
+  type: "d_mob_progress";
+  completed: number;
+  total: number;
+  currentEntity: string;
+  status: "generating" | "complete" | "error";
+}
+
+export interface DungeonMobSpritesMessage {
+  type: "d_mob_sprites";
+  sprites: Array<{ entityName: string; spritePng: string }>;
+}
+
 export type DungeonServerMessage =
   | DungeonTickMessage
   | DungeonFloorMessage
   | DungeonPowerupChoicesMessage
   | DungeonResultsMessage
   | DungeonLobbyMessage
-  | DungeonWelcomeMessage;
+  | DungeonWelcomeMessage
+  | DungeonMobProgressMessage
+  | DungeonMobSpritesMessage;
 
 // ─── Snapshot types (wire format) ────────────────────────────────────────────
 

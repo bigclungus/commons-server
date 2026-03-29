@@ -33,6 +33,8 @@ import {
   type Room as GenRoom,
 } from "./dungeon-generation.ts";
 
+import { mobRegistry } from "./mob-registry.ts";
+
 import {
   resolvePower,
   applyDamage,
@@ -212,7 +214,27 @@ export function initFloor(instance: DungeonInstance): void {
   const template = DEFAULT_FLOOR_TEMPLATES[floorNum - 1] ?? DEFAULT_FLOOR_TEMPLATES[0];
   const seedStr = `${instance.seed}-f${floorNum}`;
 
-  const genLayout = generateFloor(seedStr, floorNum, template, DEFAULT_ENEMY_VARIANTS);
+  // Use mob registry if populated, otherwise fall back to hardcoded defaults
+  let variants: EnemyVariant[];
+  if (mobRegistry.size > 0) {
+    // Seeded RNG for deterministic mob selection per run
+    let rngState = 0;
+    for (let i = 0; i < seedStr.length; i++) {
+      rngState = (Math.imul(31, rngState) + seedStr.charCodeAt(i)) | 0;
+    }
+    if (rngState === 0) rngState = 1;
+    const seededRng = (): number => {
+      let t = (rngState += 0x6d2b79f5);
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6), seededRng);
+  } else {
+    variants = DEFAULT_ENEMY_VARIANTS;
+  }
+
+  const genLayout = generateFloor(seedStr, floorNum, template, variants);
   const eph = getEphemeral(instance);
   eph.genLayout = genLayout;
 
@@ -250,7 +272,7 @@ export function initFloor(instance: DungeonInstance): void {
   // Spawn enemies from genLayout
   let enemyCounter = 0;
   for (const spawn of genLayout.enemySpawns) {
-    const variant = DEFAULT_ENEMY_VARIANTS.find((v) => v.id === spawn.variantId);
+    const variant = variants.find((v) => v.id === spawn.variantId);
     if (!variant) continue;
 
     const enemyId = `e-${instance.id}-${enemyCounter++}`;

@@ -49,6 +49,7 @@ import {
   handlePowerupPick,
 } from "./dungeon/dungeon-loop.ts";
 import { initLootSystem } from "./dungeon/loot.ts";
+import { initMobRegistry } from "./dungeon/mob-registry.ts";
 import { db } from "./persistence.ts";
 
 // ─── World state initialisation ──────────────────────────────────────────────
@@ -585,6 +586,7 @@ const bunServer = serve<AnySocketData>({
 // ─── Loot system init ──────────────────────────────────────────────────────
 
 initLootSystem(db);
+initMobRegistry(db);
 
 // ─── Dungeon loop setup ─────────────────────────────────────────────────────
 
