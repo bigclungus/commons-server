@@ -49,7 +49,7 @@ import {
   handlePowerupPick,
 } from "./dungeon/dungeon-loop.ts";
 import { initLootSystem } from "./dungeon/loot.ts";
-import { initMobRegistry } from "./dungeon/mob-registry.ts";
+import { initMobRegistry, mobRegistry } from "./dungeon/mob-registry.ts";
 import { db } from "./persistence.ts";
 
 // ─── World state initialisation ──────────────────────────────────────────────
@@ -502,10 +502,11 @@ const bunServer = serve<AnySocketData>({
               const playerCount = started.players.size;
 
               // Step 1: Send loading status immediately so the overlay appears
+              const mobTotal = mobRegistry.size;
               const mobLoadingMsg: DungeonServerMessage = {
                 type: "d_mob_progress",
                 completed: 0,
-                total: playerCount,
+                total: mobTotal,
                 currentEntity: "Preparing mobs...",
                 status: "loading",
               };
@@ -519,8 +520,8 @@ const bunServer = serve<AnySocketData>({
               setTimeout(() => {
                 const mobCompleteMsg: DungeonServerMessage = {
                   type: "d_mob_progress",
-                  completed: playerCount,
-                  total: playerCount,
+                  completed: mobTotal,
+                  total: mobTotal,
                   currentEntity: "Ready",
                   status: "complete",
                 };
@@ -543,8 +544,9 @@ const bunServer = serve<AnySocketData>({
                 .map((p) => p.name);
               (async () => {
                 try {
-                  const { Client } = await import("@temporalio/client");
-                  const client = await Client.connect({ address: "localhost:7233" });
+                  const { Client, Connection } = await import("@temporalio/client");
+                  const connection = await Connection.connect({ address: "localhost:7233" });
+                  const client = new Client({ connection });
                   await client.workflow.start("MobGenerationWorkflow", {
                     workflowId,
                     taskQueue: "listings-queue",
