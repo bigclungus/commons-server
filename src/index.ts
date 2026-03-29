@@ -499,7 +499,62 @@ const bunServer = serve<AnySocketData>({
             }
             const started = startRun(lobbyId);
             if (started) {
-              initFloor(started);
+              const playerCount = started.players.size;
+
+              // Step 1: Send loading status immediately so the overlay appears
+              const mobLoadingMsg: DungeonServerMessage = {
+                type: "d_mob_progress",
+                completed: 0,
+                total: playerCount,
+                currentEntity: "Preparing mobs...",
+                status: "loading",
+              };
+              for (const [_sid, sock] of dungeonSockets) {
+                if (sock.data.lobbyId === lobbyId) {
+                  sock.send(JSON.stringify(mobLoadingMsg));
+                }
+              }
+
+              // Step 2: After 600ms, send complete status
+              setTimeout(() => {
+                const mobCompleteMsg: DungeonServerMessage = {
+                  type: "d_mob_progress",
+                  completed: playerCount,
+                  total: playerCount,
+                  currentEntity: "Ready",
+                  status: "complete",
+                };
+                for (const [_sid, sock] of dungeonSockets) {
+                  if (sock.data.lobbyId === lobbyId) {
+                    sock.send(JSON.stringify(mobCompleteMsg));
+                  }
+                }
+              }, 600);
+
+              // Step 3: After 800ms, init the floor (loading screen visible for ~800ms total)
+              setTimeout(() => {
+                initFloor(started);
+              }, 800);
+
+              // Trigger MobGenerationWorkflow in background for future run enrichment
+              // Fire-and-forget: don't block game start on LLM generation
+              const workflowId = `mob-gen-${started.id}-${Date.now()}`;
+              const excludeNames = Array.from(started.players.values())
+                .map((p) => p.name);
+              (async () => {
+                try {
+                  const { Client } = await import("@temporalio/client");
+                  const client = await Client.connect({ address: "localhost:7233" });
+                  await client.workflow.start("MobGenerationWorkflow", {
+                    workflowId,
+                    taskQueue: "listings-queue",
+                    args: [30, excludeNames],
+                  });
+                  console.log(`[dungeon-ws] MobGenerationWorkflow started: ${workflowId}`);
+                } catch (err) {
+                  console.warn("[dungeon-ws] MobGenerationWorkflow trigger failed:", err);
+                }
+              })();
             }
           }
           return;
