@@ -40,6 +40,7 @@ export interface DungeonReadyMessage {
 
 export interface DungeonStartMessage {
   type: "d_start";
+  skipGen?: boolean;
 }
 
 export interface DungeonPickPowerupMessage {

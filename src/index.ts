@@ -539,24 +539,29 @@ const bunServer = serve<AnySocketData>({
 
               // Trigger MobGenerationWorkflow in background for future run enrichment
               // Fire-and-forget: don't block game start on LLM generation
-              const workflowId = `mob-gen-${started.id}-${Date.now()}`;
-              const excludeNames = Array.from(started.players.values())
-                .map((p) => p.name);
-              (async () => {
-                try {
-                  const { Client, Connection } = await import("@temporalio/client");
-                  const connection = await Connection.connect({ address: "localhost:7233" });
-                  const client = new Client({ connection });
-                  await client.workflow.start("MobGenerationWorkflow", {
-                    workflowId,
-                    taskQueue: "listings-queue",
-                    args: [30, excludeNames],
-                  });
-                  console.log(`[dungeon-ws] MobGenerationWorkflow started: ${workflowId}`);
-                } catch (err) {
-                  console.warn("[dungeon-ws] MobGenerationWorkflow trigger failed:", err);
-                }
-              })();
+              // Skip if the host requested cached-only mode (skipGen: true)
+              if (!msg.skipGen) {
+                const workflowId = `mob-gen-${started.id}-${Date.now()}`;
+                const excludeNames = Array.from(started.players.values())
+                  .map((p) => p.name);
+                (async () => {
+                  try {
+                    const { Client, Connection } = await import("@temporalio/client");
+                    const connection = await Connection.connect({ address: "localhost:7233" });
+                    const client = new Client({ connection });
+                    await client.workflow.start("MobGenerationWorkflow", {
+                      workflowId,
+                      taskQueue: "listings-queue",
+                      args: [30, excludeNames],
+                    });
+                    console.log(`[dungeon-ws] MobGenerationWorkflow started: ${workflowId}`);
+                  } catch (err) {
+                    console.warn("[dungeon-ws] MobGenerationWorkflow trigger failed:", err);
+                  }
+                })();
+              } else {
+                console.log(`[dungeon-ws] skipGen=true — skipping MobGenerationWorkflow for lobby ${lobbyId}`);
+              }
             }
           }
           return;
