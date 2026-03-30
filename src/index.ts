@@ -308,23 +308,6 @@ const bunServer = serve<AnySocketData>({
         }
         const instance = createLobby(body.userId, body.name);
 
-        // Fire-and-forget Discord notification to #clungiverse channel
-        const discordToken = process.env.DISCORD_BOT_TOKEN;
-        if (discordToken) {
-          fetch('https://discord.com/api/v10/channels/1488315244190236723/messages', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bot ${discordToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              content: `⚔️ **Adventurer** created a Clungiverse lobby! Join here: https://clung.us/clungiverse?lobby=${instance.lobbyId}`,
-            }),
-          }).catch((err) => console.warn('[clungiverse] Discord notify failed:', err));
-        } else {
-          console.warn('[clungiverse] DISCORD_BOT_TOKEN not set, skipping notification');
-        }
-
         return new Response(
           JSON.stringify({ lobbyId: instance.lobbyId, hostId: body.userId }),
           { headers: { "Content-Type": "application/json" } }
@@ -385,7 +368,7 @@ const bunServer = serve<AnySocketData>({
             headers: { "Content-Type": "application/json" },
           });
         }
-        const discordRes = await fetch("https://discord.com/api/v10/channels/1485343472952148008/messages", {
+        const discordRes = await fetch("https://discord.com/api/v10/channels/1488315244190236723/messages", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
