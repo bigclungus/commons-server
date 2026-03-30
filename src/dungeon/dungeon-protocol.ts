@@ -253,6 +253,8 @@ export interface DungeonInstance {
   aoeZones: Map<string, AoEZoneInstance>;
   layout: FloorLayout | null;
   tickInterval: ReturnType<typeof setInterval> | null;
+  /** When true, mob selection is restricted to mobs that have rendered PNG images. */
+  skipGen: boolean;
 }
 
 export interface DungeonPlayer {

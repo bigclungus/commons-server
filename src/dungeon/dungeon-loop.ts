@@ -236,7 +236,7 @@ export function initFloor(instance: DungeonInstance): void {
         t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
         return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
       };
-      variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6), seededRng);
+      variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6), seededRng, instance.skipGen);
 
       // Persist selections so subsequent floors can reuse the same mob pool
       try {
@@ -272,11 +272,11 @@ export function initFloor(instance: DungeonInstance): void {
         } else {
           // Fallback: selection not found (shouldn't happen), select fresh
           console.warn(`[dungeon-loop] No run_mob_selections for run ${runId} on floor ${floorNum}, selecting fresh`);
-          variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6));
+          variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6), Math.random, instance.skipGen);
         }
       } catch (err) {
         console.error("[dungeon-loop] Failed to load run_mob_selections:", err);
-        variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6));
+        variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6), Math.random, instance.skipGen);
       }
     }
   } else {

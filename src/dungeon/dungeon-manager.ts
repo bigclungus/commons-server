@@ -77,6 +77,7 @@ export function createLobby(hostId: string, hostName: string): DungeonInstance {
     aoeZones: new Map(),
     layout: null,
     tickInterval: null,
+    skipGen: false,
   };
 
   // Add host as first player (no persona selected yet)
@@ -159,7 +160,7 @@ export function joinLobby(
   return instance;
 }
 
-export function startRun(lobbyId: string): DungeonInstance | null {
+export function startRun(lobbyId: string, skipGen = false): DungeonInstance | null {
   const instance = instances.get(lobbyId);
   if (!instance) return null;
   if (instance.status !== "lobby") return null;
@@ -176,8 +177,9 @@ export function startRun(lobbyId: string): DungeonInstance | null {
   instance.floor = 1;
   instance.tick = 0;
   instance.startedAt = Date.now();
+  instance.skipGen = skipGen;
 
-  console.log(`[dungeon] Run started for lobby ${lobbyId} (${instance.players.size} players)`);
+  console.log(`[dungeon] Run started for lobby ${lobbyId} (${instance.players.size} players, skipGen=${skipGen})`);
 
   // Floor generation is triggered by the caller after startRun returns
   return instance;

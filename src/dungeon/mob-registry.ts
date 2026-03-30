@@ -3,7 +3,34 @@
 // compatible with the existing dungeon generation pipeline.
 
 import { Database } from "bun:sqlite";
+import { readdirSync } from "fs";
+import { join } from "path";
 import type { EnemyVariant } from "./dungeon-generation.ts";
+
+// ─── Image availability ──────────────────────────────────────────────────────
+
+const MOB_IMAGES_DIR = "/mnt/data/hello-world/static/mob-images";
+
+/** Convert a display name to the slug used for PNG filenames.
+ *  Must match the mobSlug() function in the client JS.
+ */
+function displayNameToSlug(displayName: string): string {
+  return displayName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+/** Return the set of slugs that have a PNG in MOB_IMAGES_DIR. */
+function loadAvailableImageSlugs(): Set<string> {
+  try {
+    const files = readdirSync(MOB_IMAGES_DIR);
+    return new Set(
+      files
+        .filter((f) => f.endsWith(".png"))
+        .map((f) => f.slice(0, -4))
+    );
+  } catch {
+    return new Set();
+  }
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -125,13 +152,35 @@ class MobRegistry {
     return this.toVariant(mob, id);
   }
 
+  /** Check whether a mob has a rendered PNG image available. */
+  hasImage(mob: MobRegistryItem): boolean {
+    const slug = displayNameToSlug(mob.displayName);
+    const available = loadAvailableImageSlugs();
+    return available.has(slug);
+  }
+
   /**
    * Select N mobs uniformly at random, returning them as EnemyVariant[]
    * compatible with the dungeon generation pipeline.
    * Assigns sequential IDs starting at 1 and floor_min = 1 for all.
+   *
+   * @param count    How many mobs to select.
+   * @param rng      Optional seeded RNG (defaults to Math.random).
+   * @param imageOnly When true, only mobs with a corresponding PNG in
+   *                  MOB_IMAGES_DIR are eligible. If fewer image-backed mobs
+   *                  exist than `count`, all available image-backed mobs are
+   *                  returned (no fallback to image-less mobs).
    */
-  selectForRun(count: number, rng: () => number = Math.random): EnemyVariant[] {
-    const all = Array.from(this.items.values());
+  selectForRun(count: number, rng: () => number = Math.random, imageOnly = false): EnemyVariant[] {
+    let all = Array.from(this.items.values());
+
+    if (imageOnly) {
+      const available = loadAvailableImageSlugs();
+      const before = all.length;
+      all = all.filter((m) => available.has(displayNameToSlug(m.displayName)));
+      console.log(`[mob-registry] selectForRun imageOnly: ${all.length}/${before} mobs have images`);
+    }
+
     if (all.length === 0) return [];
     if (all.length <= count) return all.map((m, i) => this.toVariant(m, i + 1));
 

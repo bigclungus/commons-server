@@ -497,7 +497,7 @@ const bunServer = serve<AnySocketData>({
               console.warn(`[dungeon-ws] Non-host ${userId} tried to start lobby ${lobbyId}`);
               return;
             }
-            const started = startRun(lobbyId);
+            const started = startRun(lobbyId, !!msg.skipGen);
             if (started) {
               const playerCount = started.players.size;
 
