@@ -11,6 +11,7 @@ import type {
   DungeonServerMessage,
   DungeonTickMessage,
   DungeonFloorMessage,
+  DungeonMobRosterMessage,
   DungeonPlayerSnapshot,
   EnemySnapshot,
   ProjectileSnapshot,
@@ -280,6 +281,29 @@ export function initFloor(instance: DungeonInstance): void {
     }
   } else {
     variants = DEFAULT_ENEMY_VARIANTS;
+  }
+
+  // Broadcast mob roster to all players before generating the floor (floor 1 only)
+  // so the mob preview screen can show while the dungeon loads
+  if (floorNum === 1) {
+    const rosterMsg: DungeonMobRosterMessage = {
+      type: "d_mob_roster",
+      mobs: variants.map((v) => {
+        // Look up registry item for extra fields (behavior, flavorText)
+        const registryItem = mobRegistry.getByDisplayName(v.name);
+        return {
+          entityName: registryItem?.entityName ?? v.name.toLowerCase().replace(/\s+/g, "_"),
+          displayName: v.name,
+          behavior: registryItem?.behavior ?? "melee_chase",
+          hp: v.hp,
+          atk: v.atk,
+          def: v.def,
+          spd: v.spd,
+          flavorText: registryItem?.flavorText ?? null,
+        };
+      }),
+    };
+    broadcastToInstance(instance, rosterMsg);
   }
 
   const genLayout = generateFloor(seedStr, floorNum, template, variants);

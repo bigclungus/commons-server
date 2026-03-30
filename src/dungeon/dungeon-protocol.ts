@@ -121,6 +121,20 @@ export interface DungeonMobSpritesMessage {
   sprites: Array<{ entityName: string; spritePng: string }>;
 }
 
+export interface DungeonMobRosterMessage {
+  type: "d_mob_roster";
+  mobs: Array<{
+    entityName: string;
+    displayName: string;
+    behavior: "melee_chase" | "ranged_pattern" | "slow_charge";
+    hp: number;
+    atk: number;
+    def: number;
+    spd: number;
+    flavorText: string | null;
+  }>;
+}
+
 export type DungeonServerMessage =
   | DungeonTickMessage
   | DungeonFloorMessage
@@ -129,7 +143,8 @@ export type DungeonServerMessage =
   | DungeonLobbyMessage
   | DungeonWelcomeMessage
   | DungeonMobProgressMessage
-  | DungeonMobSpritesMessage;
+  | DungeonMobSpritesMessage
+  | DungeonMobRosterMessage;
 
 // ─── Snapshot types (wire format) ────────────────────────────────────────────
 
