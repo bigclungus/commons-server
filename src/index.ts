@@ -308,19 +308,25 @@ const bunServer = serve<AnySocketData>({
         }
         const instance = createLobby(body.userId, body.name);
 
-        // Fire-and-forget Discord notification via omni webhook
+        // Fire-and-forget Discord notification via direct Discord API
         const quickJoinUrl = `https://clung.us/clungiverse?lobby=${instance.lobbyId}`;
-        const notifPayload = JSON.stringify({
-          content: `⚔️ **${body.name}** created a Clungiverse lobby! Join here: ${quickJoinUrl}`,
-          user: "clungiverse",
-        });
-        fetch("http://127.0.0.1:8085/webhooks/bigclungus-main", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: notifPayload,
-        }).catch((err) => {
-          console.warn("[clungiverse] Discord notify failed:", err);
-        });
+        const discordToken = process.env.DISCORD_BOT_TOKEN;
+        if (discordToken) {
+          fetch("https://discord.com/api/v10/channels/1485343472952148008/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bot ${discordToken}`,
+            },
+            body: JSON.stringify({
+              content: `⚔️ **${body.name}** created a Clungiverse lobby! Join here: ${quickJoinUrl}`,
+            }),
+          }).catch((err) => {
+            console.warn("[clungiverse] Discord notify failed:", err);
+          });
+        } else {
+          console.warn("[clungiverse] DISCORD_BOT_TOKEN not set, skipping notification");
+        }
 
         return new Response(
           JSON.stringify({ lobbyId: instance.lobbyId, hostId: body.userId }),
