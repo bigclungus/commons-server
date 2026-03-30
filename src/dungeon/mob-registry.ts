@@ -111,6 +111,20 @@ class MobRegistry {
     return this.items.size;
   }
 
+  /** Look up a mob by its display name (case-insensitive exact match). */
+  getByDisplayName(displayName: string): MobRegistryItem | undefined {
+    const lower = displayName.toLowerCase();
+    for (const item of this.items.values()) {
+      if (item.displayName.toLowerCase() === lower) return item;
+    }
+    return undefined;
+  }
+
+  /** Public wrapper around toVariant for use outside the class (e.g. dungeon-loop). */
+  toVariantPublic(mob: MobRegistryItem, id: number): EnemyVariant {
+    return this.toVariant(mob, id);
+  }
+
   /**
    * Select N mobs uniformly at random, returning them as EnemyVariant[]
    * compatible with the dungeon generation pipeline.

@@ -34,6 +34,7 @@ import {
 } from "./dungeon-generation.ts";
 
 import { mobRegistry } from "./mob-registry.ts";
+import { db } from "../persistence.ts";
 
 import {
   resolvePower,
@@ -214,22 +215,69 @@ export function initFloor(instance: DungeonInstance): void {
   const template = DEFAULT_FLOOR_TEMPLATES[floorNum - 1] ?? DEFAULT_FLOOR_TEMPLATES[0];
   const seedStr = `${instance.seed}-f${floorNum}`;
 
-  // Use mob registry if populated, otherwise fall back to hardcoded defaults
+  // Use mob registry if populated, otherwise fall back to hardcoded defaults.
+  // Mob selection is persisted to run_mob_selections on floor 1 so all subsequent
+  // floors use the same generated mob pool for the entire run.
   let variants: EnemyVariant[];
   if (mobRegistry.size > 0) {
-    // Seeded RNG for deterministic mob selection per run
-    let rngState = 0;
-    for (let i = 0; i < seedStr.length; i++) {
-      rngState = (Math.imul(31, rngState) + seedStr.charCodeAt(i)) | 0;
+    const runId = instance.id;
+
+    if (floorNum === 1) {
+      // Floor 1: select mobs using seeded RNG and persist to run_mob_selections
+      let rngState = 0;
+      for (let i = 0; i < seedStr.length; i++) {
+        rngState = (Math.imul(31, rngState) + seedStr.charCodeAt(i)) | 0;
+      }
+      if (rngState === 0) rngState = 1;
+      const seededRng = (): number => {
+        let t = (rngState += 0x6d2b79f5);
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6), seededRng);
+
+      // Persist selections so subsequent floors can reuse the same mob pool
+      try {
+        const insertSel = db.prepare(
+          "INSERT OR IGNORE INTO run_mob_selections (run_id, entity_name) VALUES (?, ?)"
+        );
+        for (const v of variants) {
+          // v.name is displayName; look up entity_name via registry
+          const item = mobRegistry.getByDisplayName(v.name);
+          if (item) insertSel.run(runId, item.entityName);
+        }
+        console.log(`[dungeon-loop] Persisted ${variants.length} mob selections for run ${runId}`);
+      } catch (err) {
+        console.error("[dungeon-loop] Failed to persist run_mob_selections:", err);
+      }
+    } else {
+      // Floor 2+: reload the same mob pool that was selected on floor 1
+      try {
+        const rows = db
+          .query<{ entity_name: string }, [string]>(
+            "SELECT entity_name FROM run_mob_selections WHERE run_id = ?"
+          )
+          .all(runId);
+
+        if (rows.length > 0) {
+          variants = rows
+            .map((r, i) => {
+              const item = mobRegistry.getMob(r.entity_name);
+              return item ? mobRegistry.toVariantPublic(item, i + 1) : null;
+            })
+            .filter((v): v is EnemyVariant => v !== null);
+          console.log(`[dungeon-loop] Loaded ${variants.length} mob selections for run ${runId} (floor ${floorNum})`);
+        } else {
+          // Fallback: selection not found (shouldn't happen), select fresh
+          console.warn(`[dungeon-loop] No run_mob_selections for run ${runId} on floor ${floorNum}, selecting fresh`);
+          variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6));
+        }
+      } catch (err) {
+        console.error("[dungeon-loop] Failed to load run_mob_selections:", err);
+        variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6));
+      }
     }
-    if (rngState === 0) rngState = 1;
-    const seededRng = (): number => {
-      let t = (rngState += 0x6d2b79f5);
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-    variants = mobRegistry.selectForRun(Math.min(mobRegistry.size, 6), seededRng);
   } else {
     variants = DEFAULT_ENEMY_VARIANTS;
   }
