@@ -93,12 +93,14 @@ function buildChunk00(): number[][] {
     }
   }
 
-  // Building top-right: rows 2-6, cols 40-47
+  // Building top-right: rows 2-6, cols 40-47 (dungeon entrance)
   for (let r = 2; r <= 6; r++) {
     for (let c = 40; c <= 47; c++) {
       set(c, r, TILE.BUILDING);
     }
   }
+  // Dungeon doorway path approach: row 7, col 43
+  set(43, 7, TILE.PATH);
 
   // Building bottom-right: rows 26-31, cols 38-46
   for (let r = 26; r <= 31; r++) {
