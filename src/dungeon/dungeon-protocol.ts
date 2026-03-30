@@ -66,6 +66,8 @@ export interface TempPowerupSnapshot {
 export interface FloorPickupSnapshot {
   id: string;
   templateId: string;
+  type: 'temp_powerup' | 'health';
+  healAmount?: number;
   x: number;
   y: number;
 }

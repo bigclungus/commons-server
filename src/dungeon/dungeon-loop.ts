@@ -607,27 +607,45 @@ function syncEnemyFromEntity(e: EnemyInstance, ee: EnemyEntity): void {
 
 // ─── Temp Powerup Helpers ────────────────────────────────────────────────────
 
-const PICKUP_DROP_CHANCE = 0.20; // 20% per enemy kill
+const PICKUP_DROP_CHANCE = 0.20; // 20% per enemy kill (temp powerup)
+const HEALTH_DROP_CHANCE = 0.15; // 15% per enemy kill (HP heart) — independent roll
 const PICKUP_RADIUS = 20; // px — collection radius
 
 let pickupCounter = 0;
 
 function maybeDropPickup(instance: DungeonInstance, x: number, y: number): void {
-  if (Math.random() >= PICKUP_DROP_CHANCE) return;
+  // Temp powerup drop (20% independent roll)
+  if (Math.random() < PICKUP_DROP_CHANCE) {
+    const templateIdx = Math.floor(Math.random() * TEMP_POWERUP_TEMPLATES.length);
+    const template = TEMP_POWERUP_TEMPLATES[templateIdx];
+    if (template) {
+      const pickupId = `pu-${instance.id}-${Date.now().toString(36)}-${(++pickupCounter).toString(36)}`;
+      const pickup: FloorPickup = {
+        id: pickupId,
+        templateId: template.id,
+        type: 'temp_powerup',
+        x,
+        y,
+        pickedUpBy: null,
+      };
+      instance.floorPickups.set(pickupId, pickup);
+    }
+  }
 
-  const templateIdx = Math.floor(Math.random() * TEMP_POWERUP_TEMPLATES.length);
-  const template = TEMP_POWERUP_TEMPLATES[templateIdx];
-  if (!template) return;
-
-  const pickupId = `pu-${instance.id}-${Date.now().toString(36)}-${(++pickupCounter).toString(36)}`;
-  const pickup: FloorPickup = {
-    id: pickupId,
-    templateId: template.id,
-    x,
-    y,
-    pickedUpBy: null,
-  };
-  instance.floorPickups.set(pickupId, pickup);
+  // Health drop (15% independent roll)
+  if (Math.random() < HEALTH_DROP_CHANCE) {
+    const pickupId = `hp-${instance.id}-${Date.now().toString(36)}-${(++pickupCounter).toString(36)}`;
+    const pickup: FloorPickup = {
+      id: pickupId,
+      templateId: 'health',
+      type: 'health',
+      // healAmount is resolved at collection time using the player's current maxHp
+      x: x + 4, // slight offset so it doesn't overlap a temp powerup dropped at same position
+      y: y + 4,
+      pickedUpBy: null,
+    };
+    instance.floorPickups.set(pickupId, pickup);
+  }
 }
 
 function applyTempPowerupToPlayer(player: DungeonPlayer, templateId: string): void {
@@ -1243,24 +1261,42 @@ function tickInstance(instance: DungeonInstance): void {
       if (pickup.pickedUpBy !== null) continue;
       if (circleVsCircle(player.x, player.y, PLAYER_RADIUS, pickup.x, pickup.y, PICKUP_RADIUS)) {
         pickup.pickedUpBy = player.id;
-        applyTempPowerupToPlayer(player, pickup.templateId);
-        let tmplName = pickup.templateId;
-        let tmplEmoji = "";
-        try {
-          const tmpl = getTempPowerupTemplate(pickup.templateId);
-          tmplName = tmpl.name;
-          tmplEmoji = tmpl.emoji;
-        } catch { /* ignore */ }
-        events.push({
-          type: "pickup",
-          payload: {
-            playerId: player.id,
-            pickupId: puid,
-            templateId: pickup.templateId,
-            name: tmplName,
-            emoji: tmplEmoji,
-          },
-        });
+
+        if (pickup.type === 'health') {
+          // Instant heal: 20% of player's max HP, capped at maxHp
+          const healAmount = Math.floor(player.maxHp * 0.20);
+          player.hp = Math.min(player.maxHp, player.hp + healAmount);
+          events.push({
+            type: "pickup",
+            payload: {
+              playerId: player.id,
+              pickupId: puid,
+              templateId: 'health',
+              name: 'Health',
+              emoji: '❤️',
+              healAmount,
+            },
+          });
+        } else {
+          applyTempPowerupToPlayer(player, pickup.templateId);
+          let tmplName = pickup.templateId;
+          let tmplEmoji = "";
+          try {
+            const tmpl = getTempPowerupTemplate(pickup.templateId);
+            tmplName = tmpl.name;
+            tmplEmoji = tmpl.emoji;
+          } catch { /* ignore */ }
+          events.push({
+            type: "pickup",
+            payload: {
+              playerId: player.id,
+              pickupId: puid,
+              templateId: pickup.templateId,
+              name: tmplName,
+              emoji: tmplEmoji,
+            },
+          });
+        }
       }
     }
     // Remove fully claimed pickups from the map
@@ -1565,11 +1601,19 @@ function buildPlayerSnapshots(instance: DungeonInstance): DungeonPlayerSnapshot[
   return snaps;
 }
 
-function buildFloorPickupSnapshots(instance: DungeonInstance): Array<{ id: string; templateId: string; x: number; y: number }> {
-  const snaps: Array<{ id: string; templateId: string; x: number; y: number }> = [];
+function buildFloorPickupSnapshots(instance: DungeonInstance): Array<{ id: string; templateId: string; type: 'temp_powerup' | 'health'; healAmount?: number; x: number; y: number }> {
+  const snaps: Array<{ id: string; templateId: string; type: 'temp_powerup' | 'health'; healAmount?: number; x: number; y: number }> = [];
   for (const [_id, pickup] of instance.floorPickups) {
     if (pickup.pickedUpBy !== null) continue; // only send uncollected
-    snaps.push({ id: pickup.id, templateId: pickup.templateId, x: pickup.x, y: pickup.y });
+    const snap: { id: string; templateId: string; type: 'temp_powerup' | 'health'; healAmount?: number; x: number; y: number } = {
+      id: pickup.id,
+      templateId: pickup.templateId,
+      type: pickup.type,
+      x: pickup.x,
+      y: pickup.y,
+    };
+    if (pickup.healAmount !== undefined) snap.healAmount = pickup.healAmount;
+    snaps.push(snap);
   }
   return snaps;
 }

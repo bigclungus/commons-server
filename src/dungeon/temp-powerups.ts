@@ -73,7 +73,11 @@ export interface ActiveTempPowerup {
 
 export interface FloorPickup {
   id: string;
+  /** For temp_powerup pickups: the template id. For health pickups: 'health'. */
   templateId: string;
+  type: 'temp_powerup' | 'health';
+  /** Only set for type === 'health'. Amount of HP to restore. */
+  healAmount?: number;
   x: number;
   y: number;
   pickedUpBy: string | null; // playerId or null
