@@ -119,6 +119,42 @@ type AnySocketData = SocketData | DungeonSocketData;
 // Track dungeon websocket connections for sending messages back
 const dungeonSockets = new Map<string, import("bun").ServerWebSocket<DungeonSocketData>>();
 
+// Discord message IDs for lobby notifications — lobbyId → Discord message ID
+// Populated when the auto-notify fires on lobby create; used to edit the message later (e.g. on run start).
+const lobbyDiscordMessages = new Map<string, string>();
+
+/**
+ * PATCH an existing lobby Discord notification message with new content.
+ * No-ops (with a warning) if no message ID is stored for the lobby or DISCORD_BOT_TOKEN is absent.
+ */
+async function updateLobbyDiscordMessage(lobbyId: string, content: string): Promise<void> {
+  const messageId = lobbyDiscordMessages.get(lobbyId);
+  if (!messageId) {
+    console.warn(`[clungiverse] updateLobbyDiscordMessage: no stored message ID for lobby ${lobbyId}`);
+    return;
+  }
+  const discordToken = process.env.DISCORD_BOT_TOKEN;
+  if (!discordToken) {
+    console.warn(`[clungiverse] updateLobbyDiscordMessage: DISCORD_BOT_TOKEN not set`);
+    return;
+  }
+  const res = await fetch(
+    `https://discord.com/api/v10/channels/1488315244190236723/messages/${messageId}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Authorization": `Bot ${discordToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ content }),
+    }
+  );
+  if (!res.ok) {
+    const errText = await res.text();
+    console.warn(`[clungiverse] Discord message PATCH failed: ${res.status} ${errText}`);
+  }
+}
+
 // ─── Congress state polling ───────────────────────────────────────────────────
 
 let congressPollFailures = 0;
@@ -308,7 +344,7 @@ const bunServer = serve<AnySocketData>({
         }
         const instance = createLobby(body.userId, body.name);
 
-        // Fire-and-forget Discord notification to #clungiverse channel
+        // Auto-notify #clungiverse channel and store the returned message ID for later editing
         const discordToken = process.env.DISCORD_BOT_TOKEN;
         if (discordToken) {
           fetch('https://discord.com/api/v10/channels/1488315244190236723/messages', {
@@ -320,6 +356,14 @@ const bunServer = serve<AnySocketData>({
             body: JSON.stringify({
               content: `⚔️ **Adventurer** created a Clungiverse lobby! Join here: https://clung.us/clungiverse?lobby=${instance.lobbyId}`,
             }),
+          }).then(async (res) => {
+            if (res.ok) {
+              const data = await res.json() as { id: string };
+              lobbyDiscordMessages.set(instance.lobbyId, data.id);
+            } else {
+              const errText = await res.text();
+              console.warn(`[clungiverse] Discord notify failed: ${res.status} ${errText}`);
+            }
           }).catch((err) => console.warn('[clungiverse] Discord notify failed:', err));
         } else {
           console.warn('[clungiverse] DISCORD_BOT_TOKEN not set, skipping notification');
@@ -567,6 +611,12 @@ const bunServer = serve<AnySocketData>({
             const started = startRun(lobbyId, !!msg.skipGen);
             if (started) {
               const playerCount = started.players.size;
+
+              // Edit the lobby Discord notification to show the game is in progress
+              updateLobbyDiscordMessage(
+                lobbyId,
+                `~~⚔️ **Adventurer** created a Clungiverse lobby! Join here: https://clung.us/clungiverse?lobby=${lobbyId}~~ *(game in progress)*`
+              ).catch((err) => console.warn(`[dungeon-ws] Failed to update lobby Discord message: ${err}`));
 
               // Step 1: Send loading status immediately so the overlay appears
               const mobTotal = mobRegistry.size;
