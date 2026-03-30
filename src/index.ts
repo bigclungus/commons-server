@@ -308,26 +308,6 @@ const bunServer = serve<AnySocketData>({
         }
         const instance = createLobby(body.userId, body.name);
 
-        // Fire-and-forget Discord notification via direct Discord API
-        const quickJoinUrl = `https://clung.us/clungiverse?lobby=${instance.lobbyId}`;
-        const discordToken = process.env.DISCORD_BOT_TOKEN;
-        if (discordToken) {
-          fetch("https://discord.com/api/v10/channels/1485343472952148008/messages", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bot ${discordToken}`,
-            },
-            body: JSON.stringify({
-              content: `⚔️ **${body.name}** created a Clungiverse lobby! Join here: ${quickJoinUrl}`,
-            }),
-          }).catch((err) => {
-            console.warn("[clungiverse] Discord notify failed:", err);
-          });
-        } else {
-          console.warn("[clungiverse] DISCORD_BOT_TOKEN not set, skipping notification");
-        }
-
         return new Response(
           JSON.stringify({ lobbyId: instance.lobbyId, hostId: body.userId }),
           { headers: { "Content-Type": "application/json" } }
@@ -366,6 +346,54 @@ const bunServer = serve<AnySocketData>({
         }),
         { headers: { "Content-Type": "application/json" } }
       );
+    }
+
+    // POST /api/clungiverse/lobby/:id/notify-discord
+    const lobbyNotifyMatch = url.pathname.match(/^\/api\/clungiverse\/lobby\/([^/]+)\/notify-discord$/);
+    if (lobbyNotifyMatch && req.method === "POST") {
+      try {
+        const lobbyId = lobbyNotifyMatch[1];
+        const instance = getInstance(lobbyId);
+        if (!instance) {
+          return new Response(JSON.stringify({ error: "Lobby not found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const quickJoinUrl = `https://clung.us/clungiverse?lobby=${lobbyId}`;
+        const discordToken = process.env.DISCORD_BOT_TOKEN;
+        if (!discordToken) {
+          return new Response(JSON.stringify({ error: "DISCORD_BOT_TOKEN not set" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const discordRes = await fetch("https://discord.com/api/v10/channels/1485343472952148008/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bot ${discordToken}`,
+          },
+          body: JSON.stringify({
+            content: `⚔️ **Adventurer** created a Clungiverse lobby! Join here: ${quickJoinUrl}`,
+          }),
+        });
+        if (!discordRes.ok) {
+          const errText = await discordRes.text();
+          return new Response(JSON.stringify({ error: `Discord API error: ${discordRes.status} ${errText}` }), {
+            status: 502,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
 
     // POST /api/clungiverse/lobby/:id/join
