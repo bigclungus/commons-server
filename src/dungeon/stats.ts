@@ -1,5 +1,10 @@
 // Stat calculation for dungeon players: base persona stats + powerup modifiers.
 
+import type { ActiveTempPowerup } from "./temp-powerups.ts";
+import { getTempPowerupTemplate } from "./temp-powerups.ts";
+
+export type { ActiveTempPowerup };
+
 export interface BaseStats {
   maxHP: number;
   ATK: number;
@@ -21,11 +26,12 @@ export interface EffectiveStats extends BaseStats {
 
 /**
  * Combine base persona stats with all acquired powerup modifiers.
- * Powerups are purely additive.
+ * Permanent powerups are additive first; then temp powerup multipliers are applied on top.
  */
 export function calculateEffectiveStats(
   base: BaseStats,
   powerups: Powerup[],
+  activeTempPowerups?: ActiveTempPowerup[],
 ): EffectiveStats {
   const effective: BaseStats = {
     maxHP: base.maxHP,
@@ -56,9 +62,31 @@ export function calculateEffectiveStats(
   // Crit chance: LCK * 0.02, capped at 0.8
   const critChance = Math.min(0.8, effective.LCK * 0.02);
 
-  return {
+  let result: EffectiveStats = {
     ...effective,
     autoAttackIntervalMs,
     critChance,
   };
+
+  // Apply active temp powerup multipliers on top of permanent stats
+  if (activeTempPowerups && activeTempPowerups.length > 0) {
+    const now = Date.now();
+    for (const active of activeTempPowerups) {
+      if (active.expiresAt <= now) continue;
+      let tmpl;
+      try {
+        tmpl = getTempPowerupTemplate(active.templateId);
+      } catch {
+        continue;
+      }
+      if (tmpl.applyMultipliers) {
+        result = tmpl.applyMultipliers(result) as EffectiveStats;
+        // Recalculate derived values after multipliers
+        result.autoAttackIntervalMs = 6 / (1 + result.SPD * 0.05);
+        result.critChance = Math.min(0.8, result.LCK * 0.02);
+      }
+    }
+  }
+
+  return result;
 }

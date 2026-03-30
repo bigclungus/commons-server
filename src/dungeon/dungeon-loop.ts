@@ -22,6 +22,12 @@ import type {
 } from "./dungeon-protocol.ts";
 
 import {
+  TEMP_POWERUP_TEMPLATES,
+  getTempPowerupTemplate,
+  type FloorPickup,
+} from "./temp-powerups.ts";
+
+import {
   getAllInstances,
   destroyRun,
 } from "./dungeon-manager.ts";
@@ -333,10 +339,11 @@ export function initFloor(instance: DungeonInstance): void {
   };
   instance.layout = layout;
 
-  // Clear old entities
+  // Clear old entities and floor pickups
   instance.enemies.clear();
   instance.projectiles.clear();
   instance.aoeZones.clear();
+  instance.floorPickups.clear();
   eph.aiStates.clear();
   eph.bossAIState = null;
   eph.bossId = null;
@@ -463,7 +470,7 @@ export function initFloor(instance: DungeonInstance): void {
     }
   }
 
-  // Initialize player stats
+  // Initialize player stats (temp powerups do NOT carry between floors)
   for (const [_id, player] of instance.players) {
     const base = PERSONA_STATS[player.personaSlug] ?? PERSONA_STATS.holden;
     const effective = calculateEffectiveStats(base, []);
@@ -478,6 +485,8 @@ export function initFloor(instance: DungeonInstance): void {
     // cooldownMax in ticks derived from autoAttackIntervalMs
     player.cooldownMax = Math.ceil(effective.autoAttackIntervalMs / TICK_MS);
     player.diedOnFloor = null;
+    // Temp powerups expire on floor transition
+    player.activeTempPowerups = [];
   }
 
   // Send floor data to all players
@@ -521,6 +530,15 @@ export function initFloor(instance: DungeonInstance): void {
 // ─── Adapter: DungeonPlayer → combat PlayerEntity ────────────────────────────
 
 function toPlayerEntity(p: DungeonPlayer, tick: number): PlayerEntity {
+  // Build effective stats including temp powerup multipliers
+  const baseStats: BaseStats = {
+    maxHP: p.maxHp,
+    ATK: p.atk,
+    DEF: p.def,
+    SPD: p.spd,
+    LCK: p.lck,
+  };
+  const effectiveStats = calculateEffectiveStats(baseStats, [], p.activeTempPowerups);
   return {
     id: p.id,
     x: p.x,
@@ -528,15 +546,7 @@ function toPlayerEntity(p: DungeonPlayer, tick: number): PlayerEntity {
     radius: PLAYER_RADIUS,
     hp: p.hp,
     maxHP: p.maxHp,
-    stats: {
-      maxHP: p.maxHp,
-      ATK: p.atk,
-      DEF: p.def,
-      SPD: p.spd,
-      LCK: p.lck,
-      autoAttackIntervalMs: 600 / (1 + p.spd * 0.05),
-      critChance: Math.min(0.8, p.lck * 0.02),
-    },
+    stats: effectiveStats,
     facing: p.facing,
     iFrameUntilTick: tick + p.iframeTicks,
     alive: p.hp > 0 && p.diedOnFloor === null,
@@ -544,6 +554,7 @@ function toPlayerEntity(p: DungeonPlayer, tick: number): PlayerEntity {
     powerCooldownUntilTick: tick + p.cooldownTicks,
     broseidonWindowEnd: 0,
     broseidonStacks: 0,
+    activeTempPowerups: p.activeTempPowerups,
   };
 }
 
@@ -592,6 +603,54 @@ function syncEnemyFromEntity(e: EnemyInstance, ee: EnemyEntity): void {
   e.hp = ee.hp;
   e.x = ee.x;
   e.y = ee.y;
+}
+
+// ─── Temp Powerup Helpers ────────────────────────────────────────────────────
+
+const PICKUP_DROP_CHANCE = 0.20; // 20% per enemy kill
+const PICKUP_RADIUS = 20; // px — collection radius
+
+let pickupCounter = 0;
+
+function maybeDropPickup(instance: DungeonInstance, x: number, y: number): void {
+  if (Math.random() >= PICKUP_DROP_CHANCE) return;
+
+  const templateIdx = Math.floor(Math.random() * TEMP_POWERUP_TEMPLATES.length);
+  const template = TEMP_POWERUP_TEMPLATES[templateIdx];
+  if (!template) return;
+
+  const pickupId = `pu-${instance.id}-${Date.now().toString(36)}-${(++pickupCounter).toString(36)}`;
+  const pickup: FloorPickup = {
+    id: pickupId,
+    templateId: template.id,
+    x,
+    y,
+    pickedUpBy: null,
+  };
+  instance.floorPickups.set(pickupId, pickup);
+}
+
+function applyTempPowerupToPlayer(player: DungeonPlayer, templateId: string): void {
+  let tmpl;
+  try {
+    tmpl = getTempPowerupTemplate(templateId);
+  } catch (err) {
+    console.error("[dungeon-loop] applyTempPowerupToPlayer: unknown template", templateId, err);
+    return;
+  }
+
+  const now = Date.now();
+  // Remove any existing stack of the same powerup (refresh it)
+  player.activeTempPowerups = player.activeTempPowerups.filter((a) => a.templateId !== templateId);
+  player.activeTempPowerups.push({
+    templateId,
+    expiresAt: now + tmpl.durationMs,
+  });
+}
+
+function expireTempPowerups(player: DungeonPlayer): void {
+  const now = Date.now();
+  player.activeTempPowerups = player.activeTempPowerups.filter((a) => a.expiresAt > now);
 }
 
 // ─── Main Tick ───────────────────────────────────────────────────────────────
@@ -964,7 +1023,17 @@ function tickInstance(instance: DungeonInstance): void {
         if (circleVsCircle(proj.x, proj.y, proj.radius, enemy.x, enemy.y, eRadius)) {
           enemy.hp -= proj.damage;
           const killer = instance.players.get(proj.ownerId);
-          if (killer) killer.damageDealt += proj.damage;
+          if (killer) {
+            killer.damageDealt += proj.damage;
+            // Lifesteal: heal 10% of damage dealt if active
+            const hasLifesteal = killer.activeTempPowerups.some(
+              (a) => a.templateId === "lifesteal" && a.expiresAt > Date.now()
+            );
+            if (hasLifesteal) {
+              const heal = Math.max(1, Math.floor(proj.damage * 0.1));
+              killer.hp = Math.min(killer.maxHp, killer.hp + heal);
+            }
+          }
           events.push({
             type: "damage",
             payload: {
@@ -978,6 +1047,8 @@ function tickInstance(instance: DungeonInstance): void {
             enemy.hp = 0;
             events.push({ type: "kill", payload: { enemyId: eid, killerId: proj.ownerId } });
             if (killer) killer.kills++;
+            // 20% chance to drop a temp powerup pickup at enemy's position
+            if (!enemy.isBoss) maybeDropPickup(instance, enemy.x, enemy.y);
           }
           projectilesToRemove.push(pid);
           break;
@@ -1105,6 +1176,8 @@ function tickInstance(instance: DungeonInstance): void {
               enemy.hp = 0;
               player.kills++;
               events.push({ type: "kill", payload: { enemyId: eid, killerId: pid } });
+              // 20% chance to drop a temp powerup pickup at enemy's position
+              if (!enemy.isBoss) maybeDropPickup(instance, enemy.x, enemy.y);
             }
           }
         }
@@ -1157,6 +1230,45 @@ function tickInstance(instance: DungeonInstance): void {
   for (const [_pid, player] of instance.players) {
     if (player.iframeTicks > 0) player.iframeTicks--;
     if (player.cooldownTicks > 0) player.cooldownTicks--;
+  }
+
+  // === 11b. Expire temp powerups and check pickup collection ===
+  const nowMs = Date.now();
+  for (const [_pid, player] of instance.players) {
+    if (player.hp <= 0 || player.diedOnFloor !== null) continue;
+    // Expire stale temp powerups
+    expireTempPowerups(player);
+    // Check proximity to uncollected floor pickups
+    for (const [puid, pickup] of instance.floorPickups) {
+      if (pickup.pickedUpBy !== null) continue;
+      if (circleVsCircle(player.x, player.y, PLAYER_RADIUS, pickup.x, pickup.y, PICKUP_RADIUS)) {
+        pickup.pickedUpBy = player.id;
+        applyTempPowerupToPlayer(player, pickup.templateId);
+        let tmplName = pickup.templateId;
+        let tmplEmoji = "";
+        try {
+          const tmpl = getTempPowerupTemplate(pickup.templateId);
+          tmplName = tmpl.name;
+          tmplEmoji = tmpl.emoji;
+        } catch { /* ignore */ }
+        events.push({
+          type: "pickup",
+          payload: {
+            playerId: player.id,
+            pickupId: puid,
+            templateId: pickup.templateId,
+            name: tmplName,
+            emoji: tmplEmoji,
+          },
+        });
+      }
+    }
+    // Remove fully claimed pickups from the map
+    for (const [puid, pickup] of instance.floorPickups) {
+      if (pickup.pickedUpBy !== null) {
+        instance.floorPickups.delete(puid);
+      }
+    }
   }
 
   // === 12. Check room clear conditions (only boss room doors remain locked) ===
@@ -1248,6 +1360,7 @@ function tickInstance(instance: DungeonInstance): void {
     events,
     totalMobs: eph.originalEnemyCount,
     remainingMobs,
+    floorPickups: buildFloorPickupSnapshots(instance),
   };
   broadcastToInstance(instance, tickMsg);
 }
@@ -1443,7 +1556,20 @@ function buildPlayerSnapshots(instance: DungeonInstance): DungeonPlayerSnapshot[
       maxHp: p.maxHp,
       iframeTicks: p.iframeTicks,
       cooldownRemaining: p.cooldownTicks,
+      activeTempPowerups: p.activeTempPowerups.map((a) => ({
+        templateId: a.templateId,
+        expiresAt: a.expiresAt,
+      })),
     });
+  }
+  return snaps;
+}
+
+function buildFloorPickupSnapshots(instance: DungeonInstance): Array<{ id: string; templateId: string; x: number; y: number }> {
+  const snaps: Array<{ id: string; templateId: string; x: number; y: number }> = [];
+  for (const [_id, pickup] of instance.floorPickups) {
+    if (pickup.pickedUpBy !== null) continue; // only send uncollected
+    snaps.push({ id: pickup.id, templateId: pickup.templateId, x: pickup.x, y: pickup.y });
   }
   return snaps;
 }

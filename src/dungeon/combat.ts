@@ -3,6 +3,7 @@
 
 import { circleVsCircle, pointInCone } from "./collision";
 import type { EffectiveStats } from "./stats";
+import type { ActiveTempPowerup } from "./temp-powerups.ts";
 
 // ─── Local Types ────────────────────────────────────────────────────────────
 
@@ -56,6 +57,8 @@ export interface PlayerEntity extends CombatEntity {
   broseidonWindowEnd: number;
   /** Broseidon-specific: accumulated ATK bonus from kills in current window. */
   broseidonStacks: number;
+  /** Currently active temporary powerups for this player. */
+  activeTempPowerups: ActiveTempPowerup[];
 }
 
 export interface EnemyEntity extends CombatEntity {

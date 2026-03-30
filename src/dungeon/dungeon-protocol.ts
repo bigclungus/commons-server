@@ -58,6 +58,18 @@ export type DungeonClientMessage =
 
 // ─── Server → Client messages ────────────────────────────────────────────────
 
+export interface TempPowerupSnapshot {
+  templateId: string;
+  expiresAt: number; // ms timestamp
+}
+
+export interface FloorPickupSnapshot {
+  id: string;
+  templateId: string;
+  x: number;
+  y: number;
+}
+
 export interface DungeonTickMessage {
   type: "d_tick";
   tick: number;
@@ -69,6 +81,7 @@ export interface DungeonTickMessage {
   events: TickEvent[];
   totalMobs: number;
   remainingMobs: number;
+  floorPickups: FloorPickupSnapshot[];
 }
 
 export interface DungeonFloorMessage {
@@ -159,6 +172,7 @@ export interface DungeonPlayerSnapshot {
   maxHp: number;
   iframeTicks: number;
   cooldownRemaining: number;
+  activeTempPowerups: TempPowerupSnapshot[];
 }
 
 export interface EnemySnapshot {
@@ -251,6 +265,7 @@ export interface DungeonInstance {
   enemies: Map<string, EnemyInstance>;
   projectiles: Map<string, ProjectileInstance>;
   aoeZones: Map<string, AoEZoneInstance>;
+  floorPickups: Map<string, import("./temp-powerups.ts").FloorPickup>;
   layout: FloorLayout | null;
   tickInterval: ReturnType<typeof setInterval> | null;
   /** When true, mob selection is restricted to mobs that have rendered PNG images. */
@@ -279,6 +294,7 @@ export interface DungeonPlayer {
   damageTaken: number;
   diedOnFloor: number | null;
   powerups: number[];
+  activeTempPowerups: import("./temp-powerups.ts").ActiveTempPowerup[];
   inputQueue: DungeonMoveMessage[];
   connected: boolean;
   disconnectedAt: number | null;
