@@ -307,6 +307,21 @@ const bunServer = serve<AnySocketData>({
           });
         }
         const instance = createLobby(body.userId, body.name);
+
+        // Fire-and-forget Discord notification via omni webhook
+        const quickJoinUrl = `https://clung.us/clungiverse?lobby=${instance.lobbyId}`;
+        const notifPayload = JSON.stringify({
+          content: `⚔️ **${body.name}** created a Clungiverse lobby! Join here: ${quickJoinUrl}`,
+          user: "clungiverse",
+        });
+        fetch("http://127.0.0.1:8085/webhooks/bigclungus-main", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: notifPayload,
+        }).catch((err) => {
+          console.warn("[clungiverse] Discord notify failed:", err);
+        });
+
         return new Response(
           JSON.stringify({ lobbyId: instance.lobbyId, hostId: body.userId }),
           { headers: { "Content-Type": "application/json" } }
@@ -366,20 +381,6 @@ const bunServer = serve<AnySocketData>({
             headers: { "Content-Type": "application/json" },
           });
         }
-
-        // Fire-and-forget Discord notification via omni webhook
-        const quickJoinUrl = `https://clung.us/clungiverse?lobby=${instance.lobbyId}`;
-        const notifPayload = JSON.stringify({
-          content: `⚔️ **${body.name}** joined a Clungiverse lobby! Quick join: ${quickJoinUrl}`,
-          user: "clungiverse",
-        });
-        fetch("http://127.0.0.1:8085/webhooks/bigclungus-main", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: notifPayload,
-        }).catch((err) => {
-          console.warn("[clungiverse] Discord notify failed:", err);
-        });
 
         return new Response(
           JSON.stringify({ lobbyId: instance.lobbyId, joined: true }),
