@@ -175,6 +175,8 @@ export interface DungeonPlayerSnapshot {
   iframeTicks: number;
   cooldownRemaining: number;
   activeTempPowerups: TempPowerupSnapshot[];
+  /** Crundle Nervous Scramble: ticks remaining in scramble. 0 = inactive. */
+  scramblingTicks: number;
 }
 
 export interface EnemySnapshot {
@@ -291,6 +293,8 @@ export interface DungeonPlayer {
   iframeTicks: number;
   cooldownTicks: number;
   cooldownMax: number;
+  /** Crundle Nervous Scramble: ticks remaining in scramble. 0 = inactive. */
+  scramblingTicks: number;
   kills: number;
   damageDealt: number;
   damageTaken: number;

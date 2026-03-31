@@ -35,7 +35,7 @@ export interface PowerResult {
   healEvents?: HealEvent[];
 }
 
-export type PersonaPower = "holden" | "broseidon" | "deckard_cain" | "galactus";
+export type PersonaPower = "holden" | "broseidon" | "deckard_cain" | "galactus" | "crundle";
 
 export interface CombatEntity {
   id: string;
@@ -59,6 +59,8 @@ export interface PlayerEntity extends CombatEntity {
   broseidonStacks: number;
   /** Currently active temporary powerups for this player. */
   activeTempPowerups: ActiveTempPowerup[];
+  /** Crundle-specific: tick until which Nervous Scramble is active. 0 = inactive. */
+  scramblingUntilTick: number;
 }
 
 export interface EnemyEntity extends CombatEntity {
@@ -102,6 +104,10 @@ const GALACTUS_RANGE = 36;
 const GALACTUS_HP_THRESHOLD = 0.2;
 const GALACTUS_HEAL_FRACTION = 0.15;
 const GALACTUS_COOLDOWN_TICKS = 96; // 6s
+
+const CRUNDLE_SCRAMBLE_TICKS = 32; // 2s at 16Hz
+const CRUNDLE_CONTACT_DAMAGE_FRACTION = 0.5; // 50% ATK
+const CRUNDLE_COOLDOWN_TICKS = 160; // 10s
 
 // ─── Auto-Attack ────────────────────────────────────────────────────────────
 
@@ -185,6 +191,8 @@ export function resolvePower(
       return resolveDeckard(player, allPlayers ?? [player], tick);
     case "galactus":
       return resolveGalactus(player, enemies, tick);
+    case "crundle":
+      return resolveCrundle(player, tick);
   }
 }
 
@@ -295,6 +303,33 @@ function resolveGalactus(
     affected,
     healed: totalHeal,
   };
+}
+
+/** Crundle — Nervous Scramble: sets scramblingUntilTick; contact damage is applied each tick in dungeon-loop. */
+function resolveCrundle(
+  player: PlayerEntity,
+  tick: number,
+): PowerResult {
+  player.scramblingUntilTick = tick + CRUNDLE_SCRAMBLE_TICKS;
+  player.powerCooldownUntilTick = tick + CRUNDLE_COOLDOWN_TICKS;
+
+  return {
+    activated: true,
+    powerName: "nervous_scramble",
+    affected: [],
+  };
+}
+
+// ─── Crundle Scramble Helpers ────────────────────────────────────────────────
+
+/** Returns the contact damage Crundle deals per hit during Nervous Scramble. */
+export function getCrundleContactDamage(player: PlayerEntity): number {
+  return Math.floor(player.stats.ATK * CRUNDLE_CONTACT_DAMAGE_FRACTION);
+}
+
+/** Returns true if Crundle's Nervous Scramble is currently active. */
+export function isCrundleScrambling(player: PlayerEntity, tick: number): boolean {
+  return player.persona === "crundle" && tick < player.scramblingUntilTick;
 }
 
 // ─── Damage Application ─────────────────────────────────────────────────────

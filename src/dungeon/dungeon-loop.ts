@@ -49,6 +49,8 @@ import {
   processKill,
   tickBroseidonWindow,
   tickAoEZones,
+  getCrundleContactDamage,
+  isCrundleScrambling,
   type PlayerEntity,
   type EnemyEntity,
   type AoEZone,
@@ -183,16 +185,18 @@ const PERSONA_STATS: Record<string, BaseStats> = {
   broseidon: { maxHP: 100, ATK: 16, DEF: 5, SPD: 3.5, LCK: 6 },
   deckard_cain: { maxHP: 90, ATK: 8, DEF: 6, SPD: 3.0, LCK: 10 },
   galactus: { maxHP: 120, ATK: 14, DEF: 7, SPD: 2.8, LCK: 8 },
+  crundle: { maxHP: 85, ATK: 10, DEF: 8, SPD: 4.0, LCK: 12 },
 };
 
 // SPD in base stats is px/tick movement speed; the state file uses big numbers
 // for the client display, but server combat uses the base values directly.
 
-const PERSONA_POWER: Record<string, "holden" | "broseidon" | "deckard_cain" | "galactus"> = {
+const PERSONA_POWER: Record<string, "holden" | "broseidon" | "deckard_cain" | "galactus" | "crundle"> = {
   holden: "holden",
   broseidon: "broseidon",
   deckard_cain: "deckard_cain",
   galactus: "galactus",
+  crundle: "crundle",
 };
 
 // ─── Default enemy variants (until DB is populated) ─────────────────────────
@@ -482,6 +486,7 @@ export function initFloor(instance: DungeonInstance): void {
     player.lck = effective.LCK;
     player.iframeTicks = 0;
     player.cooldownTicks = 0;
+    player.scramblingTicks = 0;
     // cooldownMax in ticks derived from autoAttackIntervalMs
     player.cooldownMax = Math.ceil(effective.autoAttackIntervalMs / TICK_MS);
     player.diedOnFloor = null;
@@ -555,6 +560,7 @@ function toPlayerEntity(p: DungeonPlayer, tick: number): PlayerEntity {
     broseidonWindowEnd: 0,
     broseidonStacks: 0,
     activeTempPowerups: p.activeTempPowerups,
+    scramblingUntilTick: tick + (p.scramblingTicks ?? 0),
   };
 }
 
@@ -594,6 +600,7 @@ function syncPlayerFromEntity(p: DungeonPlayer, pe: PlayerEntity, tick: number):
   p.hp = pe.hp;
   p.iframeTicks = Math.max(0, pe.iFrameUntilTick - tick);
   p.cooldownTicks = Math.max(0, pe.powerCooldownUntilTick - tick);
+  p.scramblingTicks = Math.max(0, pe.scramblingUntilTick - tick);
   if (!pe.alive && p.diedOnFloor === null) {
     p.diedOnFloor = p.diedOnFloor; // set by caller
   }
@@ -608,7 +615,7 @@ function syncEnemyFromEntity(e: EnemyInstance, ee: EnemyEntity): void {
 // ─── Temp Powerup Helpers ────────────────────────────────────────────────────
 
 const PICKUP_DROP_CHANCE = 0.20; // 20% per enemy kill (temp powerup)
-const HEALTH_DROP_CHANCE = 0.15; // 15% per enemy kill (HP heart) — independent roll
+const HEALTH_DROP_CHANCE = 0.075; // 7.5% per enemy kill (HP heart) — independent roll
 const PICKUP_RADIUS = 20; // px — collection radius
 
 let pickupCounter = 0;
@@ -1174,8 +1181,9 @@ function tickInstance(instance: DungeonInstance): void {
 
     const powerResult = resolvePower(pe, targets, combatZones, tick, allPlayerEntities);
     if (powerResult && powerResult.activated) {
-      // Sync cooldown back
+      // Sync cooldown and scramble state back
       player.cooldownTicks = Math.max(0, pe.powerCooldownUntilTick - tick);
+      player.scramblingTicks = Math.max(0, pe.scramblingUntilTick - tick);
 
       events.push({
         type: "power_activate",
@@ -1244,10 +1252,44 @@ function tickInstance(instance: DungeonInstance): void {
   }
   eph.pendingPowers.clear();
 
+  // === 10b. Crundle Nervous Scramble — contact damage ===
+  for (const [pid, player] of instance.players) {
+    if (player.hp <= 0 || player.diedOnFloor !== null) continue;
+    if ((player.scramblingTicks ?? 0) <= 0) continue;
+
+    const pe = allPlayerEntities.find((p) => p.id === pid);
+    if (!pe || !isCrundleScrambling(pe, tick)) continue;
+
+    const contactDamage = getCrundleContactDamage(pe);
+    for (const [eid, enemy] of instance.enemies) {
+      if (enemy.hp <= 0) continue;
+      const dx = player.x - enemy.x;
+      const dy = player.y - enemy.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > PLAYER_RADIUS + 8 + 4) continue; // player radius + melee enemy radius + small buffer
+
+      enemy.hp = Math.max(0, enemy.hp - contactDamage);
+      events.push({
+        type: "damage",
+        payload: { targetId: eid, damage: contactDamage, attackerId: pid, isCrit: false },
+      });
+
+      if (enemy.hp <= 0) {
+        const killer = instance.players.get(pid);
+        if (killer) killer.kills++;
+        events.push({
+          type: "kill",
+          payload: { enemyId: eid, killerId: pid },
+        });
+      }
+    }
+  }
+
   // === 11. Tick down player i-frames and cooldowns ===
   for (const [_pid, player] of instance.players) {
     if (player.iframeTicks > 0) player.iframeTicks--;
     if (player.cooldownTicks > 0) player.cooldownTicks--;
+    if ((player.scramblingTicks ?? 0) > 0) player.scramblingTicks!--;
   }
 
   // === 11b. Expire temp powerups and check pickup collection ===
@@ -1592,6 +1634,7 @@ function buildPlayerSnapshots(instance: DungeonInstance): DungeonPlayerSnapshot[
       maxHp: p.maxHp,
       iframeTicks: p.iframeTicks,
       cooldownRemaining: p.cooldownTicks,
+      scramblingTicks: p.scramblingTicks ?? 0,
       activeTempPowerups: p.activeTempPowerups.map((a) => ({
         templateId: a.templateId,
         expiresAt: a.expiresAt,
