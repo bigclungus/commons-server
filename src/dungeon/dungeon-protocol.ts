@@ -177,6 +177,8 @@ export interface DungeonPlayerSnapshot {
   activeTempPowerups: TempPowerupSnapshot[];
   /** Crundle Nervous Scramble: ticks remaining in scramble. 0 = inactive. */
   scramblingTicks: number;
+  /** True when this player is dead and spectating (party still alive). */
+  spectating: boolean;
 }
 
 export interface EnemySnapshot {
@@ -240,6 +242,7 @@ export interface PlayerResultSnapshot {
   kills: number;
   damageDealt: number;
   damageTaken: number;
+  totalHealing: number;
   diedOnFloor: number | null;
 }
 
@@ -298,6 +301,7 @@ export interface DungeonPlayer {
   kills: number;
   damageDealt: number;
   damageTaken: number;
+  totalHealing: number;
   diedOnFloor: number | null;
   powerups: number[];
   activeTempPowerups: import("./temp-powerups.ts").ActiveTempPowerup[];

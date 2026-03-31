@@ -172,6 +172,7 @@ function sendToPlayer(playerId: string, msg: DungeonServerMessage): void {
 
 function broadcastToInstance(instance: DungeonInstance, msg: DungeonServerMessage): void {
   for (const [id, player] of instance.players) {
+    // Send to all connected players — including dead/spectating ones so they can watch
     if (player.connected) {
       sendToPlayer(id, msg);
     }
@@ -475,11 +476,16 @@ export function initFloor(instance: DungeonInstance): void {
   }
 
   // Initialize player stats (temp powerups do NOT carry between floors)
+  // Dead/spectating players are revived with half their max HP on floor transitions.
   for (const [_id, player] of instance.players) {
+    const wasSpectating = player.diedOnFloor !== null || player.hp <= 0;
     const base = PERSONA_STATS[player.personaSlug] ?? PERSONA_STATS.holden;
     const effective = calculateEffectiveStats(base, []);
     player.maxHp = effective.maxHP;
-    player.hp = effective.maxHP;
+    // Revive dead players at half max HP; alive players get full HP from floor restore
+    player.hp = wasSpectating
+      ? Math.max(1, Math.floor(effective.maxHP / 2))
+      : effective.maxHP;
     player.atk = effective.ATK;
     player.def = effective.DEF;
     player.spd = effective.SPD;
@@ -492,6 +498,10 @@ export function initFloor(instance: DungeonInstance): void {
     player.diedOnFloor = null;
     // Temp powerups expire on floor transition
     player.activeTempPowerups = [];
+
+    if (wasSpectating) {
+      console.log(`[dungeon-loop] Reviving spectating player ${player.name} with ${player.hp}/${player.maxHp} HP on floor ${floorNum}`);
+    }
   }
 
   // Send floor data to all players
@@ -1307,7 +1317,9 @@ function tickInstance(instance: DungeonInstance): void {
         if (pickup.type === 'health') {
           // Instant heal: 20% of player's max HP, capped at maxHp
           const healAmount = Math.floor(player.maxHp * 0.20);
+          const actualHeal = Math.min(healAmount, player.maxHp - player.hp);
           player.hp = Math.min(player.maxHp, player.hp + healAmount);
+          player.totalHealing += actualHeal;
           events.push({
             type: "pickup",
             payload: {
@@ -1316,7 +1328,7 @@ function tickInstance(instance: DungeonInstance): void {
               templateId: 'health',
               name: 'Health',
               emoji: '❤️',
-              healAmount,
+              healAmount: actualHeal,
             },
           });
         } else {
@@ -1622,7 +1634,16 @@ function openDoorsForRoom(layout: ProtocolFloorLayout, roomIndex: number): void 
 
 function buildPlayerSnapshots(instance: DungeonInstance): DungeonPlayerSnapshot[] {
   const snaps: DungeonPlayerSnapshot[] = [];
+
+  // Determine if any player is still alive (for spectating flag)
+  const anyAlive = Array.from(instance.players.values()).some(
+    (p) => p.hp > 0 && p.diedOnFloor === null
+  );
+
   for (const [_id, p] of instance.players) {
+    const isDead = p.diedOnFloor !== null || p.hp <= 0;
+    // A player is "spectating" if they're dead but at least one party member is alive
+    const spectating = isDead && anyAlive;
     snaps.push({
       id: p.id,
       name: p.name,
@@ -1639,6 +1660,7 @@ function buildPlayerSnapshots(instance: DungeonInstance): DungeonPlayerSnapshot[
         templateId: a.templateId,
         expiresAt: a.expiresAt,
       })),
+      spectating,
     });
   }
   return snaps;
@@ -1722,6 +1744,7 @@ function buildResults(
     kills: p.kills,
     damageDealt: p.damageDealt,
     damageTaken: p.damageTaken,
+    totalHealing: p.totalHealing,
     diedOnFloor: p.diedOnFloor,
   }));
 
