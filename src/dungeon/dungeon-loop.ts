@@ -41,7 +41,7 @@ import {
 } from "./dungeon-generation.ts";
 
 import { mobRegistry } from "./mob-registry.ts";
-import { db } from "../persistence.ts";
+import { db, saveRunResult } from "../persistence.ts";
 
 import {
   resolvePower,
@@ -1389,6 +1389,7 @@ function tickInstance(instance: DungeonInstance): void {
         instance.status = "completed";
         const resultsMsg = buildResults(instance, "victory");
         broadcastToInstance(instance, resultsMsg);
+        persistRunResult(instance, "victory");
         console.log(`[dungeon-loop] Victory for ${instance.id}!`);
         setTimeout(() => {
           cleanupEphemeral(instance.id);
@@ -1412,6 +1413,7 @@ function tickInstance(instance: DungeonInstance): void {
     instance.status = "completed";
     const resultsMsg = buildResults(instance, "death");
     broadcastToInstance(instance, resultsMsg);
+    persistRunResult(instance, "death");
     console.log(`[dungeon-loop] Defeat for ${instance.id} on floor ${instance.floor}`);
     setTimeout(() => {
       cleanupEphemeral(instance.id);
@@ -1730,6 +1732,23 @@ function buildAoEZoneSnapshots(instance: DungeonInstance): AoEZoneSnapshot[] {
     });
   }
   return snaps;
+}
+
+function persistRunResult(
+  instance: DungeonInstance,
+  outcome: "victory" | "death",
+): void {
+  const party = Array.from(instance.players.values()).map((p) => ({
+    name: p.name,
+    personaSlug: p.personaSlug,
+  }));
+  const durationMs = Date.now() - instance.startedAt;
+  try {
+    saveRunResult(outcome, instance.floor, durationMs, party);
+  } catch (err) {
+    // Log but don't crash the game for a persistence failure
+    console.error("[dungeon-loop] Failed to persist run result:", err);
+  }
 }
 
 function buildResults(

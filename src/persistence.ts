@@ -47,6 +47,15 @@ db.exec(`
     PRIMARY KEY (chunk_x, chunk_y, tile_x, tile_y)
   );
   CREATE INDEX IF NOT EXISTS idx_player_last_seen ON player_sessions(last_seen);
+  CREATE TABLE IF NOT EXISTS dungeon_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    outcome TEXT NOT NULL,
+    floor_reached INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    party TEXT NOT NULL,
+    run_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_dungeon_runs_floor ON dungeon_runs(floor_reached DESC, run_at DESC);
 `);
 
 // Prepared statements
@@ -155,4 +164,69 @@ export function resetNpcPositionsInDb(npcNames: string[]): { x: number; y: numbe
     throw err;
   }
   return { x: CENTER_X, y: CENTER_Y };
+}
+
+// ─── Dungeon run leaderboard ─────────────────────────────────────────────────
+
+export interface RunPartyMember {
+  name: string;
+  personaSlug: string;
+}
+
+const saveRunStmt = db.prepare(
+  "INSERT INTO dungeon_runs (outcome, floor_reached, duration_ms, party, run_at) VALUES (?, ?, ?, ?, ?)"
+);
+
+export function saveRunResult(
+  outcome: "victory" | "death",
+  floorReached: number,
+  durationMs: number,
+  party: RunPartyMember[]
+): void {
+  try {
+    saveRunStmt.run(outcome, floorReached, durationMs, JSON.stringify(party), Date.now());
+    console.log(`[persistence] Saved dungeon run: ${outcome} floor ${floorReached} (${party.length} players)`);
+  } catch (err) {
+    console.error("[persistence] saveRunResult failed:", err);
+    throw err;
+  }
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  outcome: "victory" | "death";
+  floorReached: number;
+  durationMs: number;
+  party: RunPartyMember[];
+  runAt: number;
+}
+
+const getLeaderboardStmt = db.prepare(
+  `SELECT outcome, floor_reached, duration_ms, party, run_at
+   FROM dungeon_runs
+   ORDER BY floor_reached DESC, run_at DESC
+   LIMIT 10`
+);
+
+export function getLeaderboard(): LeaderboardEntry[] {
+  try {
+    const rows = getLeaderboardStmt.all() as {
+      outcome: string;
+      floor_reached: number;
+      duration_ms: number;
+      party: string;
+      run_at: number;
+    }[];
+    return rows.map((row, i) => ({
+      rank: i + 1,
+      outcome: row.outcome as "victory" | "death",
+      floorReached: row.floor_reached,
+      durationMs: row.duration_ms,
+      party: JSON.parse(row.party) as RunPartyMember[],
+      runAt: row.run_at,
+    }));
+  } catch (err) {
+    console.error("[persistence] getLeaderboard failed:", err);
+    throw err;
+  }
 }

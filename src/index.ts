@@ -18,7 +18,7 @@ import {
   buildTickPayload,
   type BroadcastFn,
 } from "./game-loop.ts";
-import { loadNpcPositions, recordWornPath, persistState, resetNpcPositionsInDb, loadWornPathsForChunk } from "./persistence.ts";
+import { loadNpcPositions, recordWornPath, persistState, resetNpcPositionsInDb, loadWornPathsForChunk, getLeaderboard } from "./persistence.ts";
 import { handleWalkerInteraction } from "./game-loop.ts";
 import { resetNpcPositions } from "./npc-ai.ts";
 import {
@@ -373,6 +373,24 @@ const bunServer = serve<AnySocketData>({
           JSON.stringify({ lobbyId: instance.lobbyId, hostId: body.userId }),
           { headers: { "Content-Type": "application/json" } }
         );
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // GET /api/clungiverse/leaderboard
+    if (url.pathname === "/api/clungiverse/leaderboard" && req.method === "GET") {
+      try {
+        const entries = getLeaderboard();
+        return new Response(JSON.stringify(entries), {
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          },
+        });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), {
           status: 500,
